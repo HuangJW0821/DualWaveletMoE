@@ -11,11 +11,12 @@ from transformers import PreTrainedModel, Cache, DynamicCache, StaticCache
 from transformers.activations import ACT2FN
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from transformers.utils import logging
-from .configuration_wavelet_moe import WaveletMoeConfig
-from .wavelet_moe_output import WaveletMoeModelOutputWithPast, WaveletMoeCausalLMOutputWithPast
 from transformers.modeling_outputs import MoeModelOutputWithPast, MoeCausalLMOutputWithPast
-from .wavelet_generation_mixin import WaveletGenerationMixin
-from ..datasets.dwt_tokenizer import DWTTokenizer
+
+from wavelet_moe.models.configuration_wavelet_moe import WaveletMoeConfig
+from wavelet_moe.models.wavelet_moe_output import WaveletMoeModelOutputWithPast, WaveletMoeCausalLMOutputWithPast
+from wavelet_moe.models.wavelet_generation_mixin import WaveletGenerationMixin
+from wavelet_moe.datasets.dwt_tokenizer import DWTTokenizer
 
 logger = logging.get_logger(__name__)
 
