@@ -5,8 +5,8 @@ from typing import Optional, Tuple, List, Union
 
 import numpy as np
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
 from transformers import PreTrainedModel, Cache, DynamicCache, StaticCache
 from transformers.activations import ACT2FN
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
@@ -299,30 +299,50 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1):
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
 
-# derived from time_moe.models.modeling_time_moe.TimeMoeInputEmbedding
-class WaveletMoeInputEmbedding(nn.Module):
+
+class WaveletMoeEmbeddingLayer(torch.nn.Module):
     """
-    Use a mlp layer to embedding the time-series.
-    Embed [batch_sz, token_num, token_len] to [batch_sz, token_num, hidden_sz], 
-    in which token_num == seq_len/(patch_sz)*2, token_len == patch_sz*2 == input_sz
+    Use a mlp layer to embedding the input ids.
+    Embed `[batch_sz, token_num, token_len]` to `[batch_sz, token_num, hidden_sz]`.
     """
 
     def __init__(self, config: WaveletMoeConfig):
         super().__init__()
         self.config = config
-        self.input_size = config.input_size  # default patch_sz*2
+        self.input_size = config.input_size
         self.hidden_size = config.hidden_size
         self.emb_layer = nn.Linear(self.input_size, self.hidden_size, bias=False)
         self.gate_layer = nn.Linear(self.input_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
-        """[batch_sz, token_num, token_len] -> [batch_sz, token_num, hidden_sz]"""
+        """Embed `[batch_sz, token_num, token_len]` -> `[batch_sz, token_num, hidden_sz]`"""
         emb = self.act_fn(self.gate_layer(x)) * self.emb_layer(x)
         return emb
 
+class WaveletMoeInputLayer(torch.nn.Module):
+    """
+    Input layer of WaveletMoE, contains two embedding layers, respectively for time sequence & wavelet coefficient sequence.
+    """
+    def __init__(self, config: WaveletMoeConfig):
+        super().__init__()
+        self.time_embed_layer = WaveletMoeEmbeddingLayer(config)
+        self.wavelet_embed_layer = WaveletMoeEmbeddingLayer(config)
+    
+    def forward(self, time_seq: torch.FloatTensor, wavelet_seq: torch.FloatTensor):
+        """
+        Embed `time_seq` & `wavelet_seq` respectively.
+        
+        Args:
+         time_seq: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`
+         wavelet_seq: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`
+        
+        Returns:
+         (time_seq_embeds, wavelet_seq_embeds): two embeddings, shape `[batch_sz, token_num, hidden_sz]`
+        """
+        return self.time_embed_layer(time_seq), self.wavelet_embed_layer(wavelet_seq)
 
-# Copied from transformers.models.mistral.modeling_mistral.MistralRotaryEmbedding with Mistral->WaveletMoe
+
 class WaveletMoeRotaryEmbedding(torch.nn.Module):
     """
     Apply RoPE to input
@@ -362,7 +382,6 @@ class WaveletMoeRotaryEmbedding(torch.nn.Module):
         )
 
 
-# Copied from transformers.models.llama.modeling_llama.LlamaRMSNorm with Llama->WaveletMoe
 class WaveletMoeRMSNorm(torch.nn.Module):
     """
     RMSNorm for Root Mean Square: x = x / sqrt(mean(x^2) + eps)
@@ -380,8 +399,7 @@ class WaveletMoeRMSNorm(torch.nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
-# Copied from from time_moe.models.modeling_time_moe.TimeMoeTemporalBlock with TimeMoe -> WaveletMoe
-class WaveletMoeTemporalBlock(nn.Module):
+class WaveletMoeTemporalBlock(torch.nn.Module):
     """
     Tempolate for FFN, used in MoE layer and dense model
     """
@@ -398,7 +416,6 @@ class WaveletMoeTemporalBlock(nn.Module):
         return self.down_proj(self.act_fn(self.gate_proj(hidden_state)) * self.up_proj(hidden_state))
 
 
-# Copied from from time_moe.models.modeling_time_moe.WaveletMoeMLP with TimeMoe -> WaveletMoe
 class WaveletMoeMLP(WaveletMoeTemporalBlock):
     """
     Wrapper of class WaveletMoeTemporalBlock
@@ -410,8 +427,7 @@ class WaveletMoeMLP(WaveletMoeTemporalBlock):
         return super().forward(hidden_state), None
 
 
-# Copied from from time_moe.models.modeling_time_moe.TimeMoeSparseExpertsLayer with TimeMoe -> WaveletMoe
-class WaveletMoeSparseExpertsLayer(nn.Module):
+class WaveletMoeSparseExpertsLayer(torch.nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -492,8 +508,7 @@ class WaveletMoeSparseExpertsLayer(nn.Module):
         return final_hidden_states, router_logits
 
 
-# Copied from transformers.models.qwen2.modeling_qwen2.Qwen2Attention with Qwen2->Wavelet
-class WaveletMoeTimeAttention(nn.Module):
+class WaveletMoeTimeAttention(torch.nn.Module):
     """
     Multi-headed attention from 'Attention Is All You Need' paper with kv cache.
     """
@@ -644,155 +659,7 @@ class WaveletMoeTimeAttention(nn.Module):
         return attn_output, attn_weights
 
 
-class WaveletMoeGroupAttention(nn.Module):
-    """
-    Multi-headed attention within groups to capture cross-channel information.
-    No REPo since there's no position information between groups.
-    """
-
-    def __init__(self, config: WaveletMoeConfig, layer_idx: Optional[int] = None):
-        super().__init__()
-        self.config = config
-        self.layer_idx = layer_idx
-        if layer_idx is None:
-            logger.warning_once(
-                f"Instantiating {self.__class__.__name__} without passing `layer_idx` is not recommended and will "
-                "to errors during the forward call, if caching is used. Please make sure to provide a `layer_idx` "
-                "when creating this class."
-            )
-
-        # attention head config, num_query_head (num_heads) >= num_kv_head in GQA
-        self.hidden_size = config.hidden_size
-        self.num_heads = config.num_attention_heads
-        self.head_dim = self.hidden_size // self.num_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-
-        self.is_causal = True
-        self.attention_dropout = config.attention_dropout
-
-        if (self.head_dim * self.num_heads) != self.hidden_size:
-            raise ValueError(
-                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-                f" and `num_heads`: {self.num_heads})."
-            )
-        
-        # projection layers
-        self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=True)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
-        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=True)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-
-
-    def forward(
-            self,
-            hidden_states: torch.Tensor,
-            attention_mask: torch.Tensor,
-            output_attentions: bool = False,
-            **kwargs,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        """
-        Group attention, MHA within groups by transpose hidden_states & sepecif attention mask.
-
-        Args:
-         hidden_states: `[batch_sz, q_len, hidden_sz]`
-         attention_mask: `[kv_len, 1, batch_sz, batch_sz]`
-         output_attentions: `bool`
-        
-        Returns:
-         (attn_output, attn_weights):
-         - attn_output: `[batch_sz, q_len, hidden_sz]`
-         - attn_weights: `None` or `[q_len, num_heads, batch_sz, batch_sz]`
-        """
-        
-        if "padding_mask" in kwargs:
-            warnings.warn(
-                "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
-            )
-        
-        # forward thourgh projection layers
-        bsz, q_len, _ = hidden_states.size()
-
-        # transpose to [q_len, batch_sz, hidden_sz] to apply group attention
-        hidden_states = hidden_states.transpose(0, 1)
-
-        # q states, shape [q_len, batch_sz, hidden_sz]
-        # kv states, shape [kv_len, batch_sz, hidden_sz]
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-
-        # q_states  shape -> [q_len, num_heads, batch_sz, head_dim], where hidden_states = num_heads * head_dim
-        # kv_states shape -> [kv_len, num_k_v_heads, batch_sz, head_dim]
-        query_states = query_states.view(q_len, bsz, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(q_len, bsz, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(q_len, bsz, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-
-        kv_len = key_states.shape[0]
-        if q_len != kv_len:
-            raise ValueError(f"q_len [{q_len}] should equal to kv_len [{kv_len}]!")
-
-        # if n_kv_heads != n_heads (when GQA or MQA), reshape k,v_sates  -> [kv_len, num_heads, batch_sz, head_dim]
-        # otherwise, keep shape unchange
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
-
-        # cal attention weights
-        # [q_len, num_heads, batch_sz, head_dim] * [kv_len, num_heads, head_dim, batch_sz]
-        # = [q_len, num_heads, batch_sz, batch_sz], since no q_len==kv_len (no kv cache)
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-        if attn_weights.size() != (q_len, self.num_heads, bsz, bsz):
-            raise ValueError(
-                f"Group attention weights should be of size {(q_len, self.num_heads, bsz, bsz)}, but is"
-                f" {attn_weights.size()}"
-            )
-
-        # masking attention weights with attn_mask
-        if attention_mask is not None:
-            if attention_mask.size() != (kv_len, 1, bsz, bsz):
-                raise ValueError(
-                    f"Group ttention mask should be of size {(kv_len, 1, bsz, bsz)}, but is {attention_mask.size()}"
-                )
-            
-            # apply mask
-            attn_weights = attn_weights + attention_mask
-
-        # forward through softmax & dropout
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-        
-        # mul with v_states
-        # [q_len, num_heads, batch_sz, batch_sz] * [kv_len, num_heads, batch_sz, head_dim]
-        # == shape [q_len, num_heads, batch_sz, head_dim] since q_len==kv_len
-        attn_output = torch.matmul(attn_weights, value_states)
-
-        if attn_output.size() != (q_len, self.num_heads, bsz, self.head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(q_len, self.num_heads, bsz, self.head_dim)}, but is"
-                f" {attn_output.size()}"
-            )
-
-        # collect heads outputs
-        # shape: [q_len, num_heads, bsz, head_dim] -> [q_len, bsz, hidden_size]
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(q_len, bsz, self.hidden_size)
-
-        # forward thorugh output_proj
-        attn_output = self.o_proj(attn_output)
-
-        # shape: [bsz, seq_len, hidden_size], consist with hidden shape in model
-        attn_output = attn_output.transpose(0, 1)
-
-        if not output_attentions:
-            attn_weights = None
-
-        return attn_output, attn_weights
-
-
-# Copied from from time_moe.models.modeling_time_moe.TimeMoeDecoderLayer with TimeMoe -> WaveletMoe
-class WaveletMoeDecoderLayer(nn.Module):
+class WaveletMoeDecoderLayer(torch.nn.Module):
     """
     Implement of WaveletMoE transformer block
     """
@@ -929,7 +796,6 @@ class WaveletMoeDecoderLayer(nn.Module):
         }
 
 
-# Copied from from time_moe.models.modeling_time_moe.WaveletMoePreTrainedModel with TimeMoe -> WaveletMoe
 class WaveletMoePreTrainedModel(PreTrainedModel):
     """
     Base class of WaveletMoE
@@ -955,12 +821,9 @@ class WaveletMoePreTrainedModel(PreTrainedModel):
                 module.weight.data[module.padding_idx].zero_()
 
 
-# Derived from from time_moe.models.modeling_time_moe.TimeMoeModel with TimeMoe -> WaveletMoe
-# Edit the implementation of causal attention mask to adpat patch-wise tokenization.
 class WaveletMoeModel(WaveletMoePreTrainedModel):
     """
-    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`TimeMoeDecoderLayer`]
-    Embedding layer + WaveletMoE backbone: WaveletMoeDecoderLayer * N
+    `WaveletMoeModel = WaveletMoeInputLayer + WaveletMoeDecoderLayer * config.num_hidden_layers`
     
     Args:
         config: WaveletMoeConfig
@@ -968,24 +831,27 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
 
     def __init__(self, config: WaveletMoeConfig):
         super().__init__(config)
-        self.embed_layer = WaveletMoeInputEmbedding(config)
-        self.layers = nn.ModuleList(
+        self.input_layer = WaveletMoeInputLayer(config)
+
+        self.decoder_layers = nn.ModuleList(
             [WaveletMoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
+
         self.norm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
+
         # Initialize weights and apply final processing
         self.post_init()
 
-    def _prepare_time_attn_mask(
+    def _prepare_causal_attn_mask(
         self,
         attention_mask: torch.Tensor,
         input_shape: Union[torch.Size, Tuple, List],
         inputs_embeds: torch.Tensor
     ):
         """
-        Generate 4d causal attention mask for time attention, mask along time axis. \n
+        Generate 4d causal attention mask for self attention, mask along time axis. \n
 
         Args:
          attention_mask: `[batch_sz, kv_len]`
@@ -993,82 +859,46 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
          inputs_embeds: `torch.Tensor`, use it to get device and dtype info
 
         Returns:
-         time_attn_mask: `[batch_sz, 1, q_len, kv_len]`
+         causal_attn_mask: `[batch_sz, 1, q_len, kv_len]`
         """
 
-        time_attn_mask = _prepare_4d_causal_attention_mask(
+        causal_attn_mask = _prepare_4d_causal_attention_mask(
             attention_mask,
             input_shape,
             inputs_embeds,
             0,
         )
     
-        return time_attn_mask
-    
-    def _prepare_group_attn_mask(
-        self,
-        attention_mask: torch.Tensor,
-        group_ids: torch.Tensor,
-        inputs_embeds: torch.Tensor
-    ):
-        """
-        Generate 4d attention mask for group attention, mask within groups. \n
-        `group_attn_mask` shapes `[kv_len, 1, batch_sz, batch_sz]`; 
-        `group_attn_mask[i][j][k]` means that in time step `i`, `batch[i]` should apply attention on `batch[j]`. \n
-
-        Args:
-         attention_mask: `[batch_sz, kv_len]`
-         group_ids: `[batch_sz,]`
-         input_shape: `(batch_sz, q_len)`
-         inputs_embeds: `torch.Tensor`, use it to get device and dtype info.
-        
-        Returns:
-         group_attn_mask: `[kv_len, 1, batch_sz, batch_sz]`
-        """
-
-        # shape [batch_sz, batch_sz]
-        # group_mask[i][j]==True when batch[i] & batch[j] are in same group
-        group_mask = group_ids[:, None] == group_ids[None, :]
-
-        # outer product of group_mask & attention_mask
-        # thus combines group & time masks to ensure attention only uses
-        # tokens from same group which are also not mask in time
-        # shape: [batch_sz, batch_sz, kv_len]
-        group_attn_mask = torch.einsum("qb, bt -> qbt", group_mask, attention_mask)
-
-        # shape -> [kv_len, 1, batch_sz, batch_sz]
-        group_attn_mask = group_attn_mask.permute(2, 0, 1).unsqueeze(1)
-
-        # invert mask
-        group_attn_mask = (1.0 - group_attn_mask) * torch.finfo(inputs_embeds.dtype).min
-
-        return group_attn_mask
+        return causal_attn_mask
 
     def forward(
             self,
-            input_ids: torch.FloatTensor = None,
-            group_ids: torch.Tensor = None,
+
+            time_seq: torch.FloatTensor = None,
+            wavelet_seq: torch.FloatTensor = None,
+
+            time_seq_embeds: torch.FloatTensor = None,
+            wavelet_seq_embeds: torch.FloatTensor = None,
+
             loss_masks: Optional[torch.FloatTensor] = None,
             attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,           
-            inputs_embeds: Optional[torch.FloatTensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,    
+
             output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None
     ) -> Union[Tuple, WaveletMoeModelOutputWithPast]:
         """
         **Notation**
-        - `q_len` equals to token nums to process in this round, \
-            (ie `horizon_len` of prediction head chosen in previous forward or input tokens nums in first forward).
-        - `kv_len` equals to tokens nums that have already processed, including input prompt & generated tokens.
-        - `token_num == q_len`
+        - Since KV cache are not yet implemented, we have `token_num == q_len == kv_len`
 
         Args:
-         input_ids: `[batch_sz, token_num, token_len]`
-         group_ids: `[batch_sz, ]`
+         time_seq: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`.
+         wavelet_seq: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`.
+         time_seq_embeds: `torch.FloatTensor`, shape `[batch_sz, token_num, hidden_sz]`.
+         wavelet_seq_embeds: `torch.FloatTensor`, shape `[batch_sz, token_num, hidden_sz]`.
+         
          loss_masks: `[batch_sz, token_num]`
-
-         attention_mask: 
+         attention_mask: `None` or `[batch_sz, kv_len]`
           - when training: first `None`; then generate in forward with shape `[batch_sz, 1, token_num, token_num]`.
           - when inference: shape `[batch_sz, kv_len]` -> `[batch_sz, 1, q_len, kv_len]`
          
@@ -1079,7 +909,6 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
         
          output_attentions: output setting, load from self.config.
          ouput_hidden_states: output setting, load from self.config.
-         return_dict: output setting, load from self.config.
         """
 
         # set default param
@@ -1088,36 +917,33 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        # retrieve input_ids and inputs_embeds
-        # valid input ts be [batch_size, seq_len, input_size]
-        if input_ids is not None and inputs_embeds is not None:
+        # check input shapes & devices
+        if time_seq is not None and time_seq_embeds is not None:
             raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
-        elif input_ids is not None:
-            # for univariate input, convert to 3D vector to unify process method
-            if len(input_ids.shape) == 2:   
-                input_ids.unsqueeze_(dim=-1)
-            batch_size, token_num, _ = input_ids.shape
-        elif inputs_embeds is not None:
-            batch_size, token_num, _ = inputs_embeds.shape
+        elif time_seq is not None and wavelet_seq is not None:
+            if time_seq.device != wavelet_seq.devices:
+                wavelet_seq.to(time_seq.device)
+            batch_size, token_num, _ = time_seq.shape
+        elif time_seq_embeds is not None and wavelet_seq_embeds is not None:
+            if time_seq_embeds.device != wavelet_seq_embeds.device:
+                wavelet_seq_embeds.to(time_seq_embeds.device)
+            batch_size, token_num, _ = time_seq_embeds.shape
         else:
             raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
 
-
         # generate position_ids for RoPE
         if position_ids is None:
-            device = input_ids.device if input_ids is not None else inputs_embeds.device
+            device = time_seq.device if time_seq is not None else time_seq_embeds.device
             position_ids = torch.arange(0, token_num, dtype=torch.long, device=device)
             position_ids = position_ids.view(-1, token_num)
         else:
             position_ids = position_ids.view(-1, token_num).long()
 
         # start forwarding from here
-        # forward through embe_layer if input arent embedding
+        # forward through input layer if input arent embedding
         # shape: [batch_sz, token_num, token_len] -> [batch_sz, token_num, hidden_sz]
-        if inputs_embeds is None:
-            inputs_embeds = self.embed_layer(input_ids)
+        if time_seq_embeds is None:
+            time_seq_embeds, wavelet_seq_embeds = self.input_layer(time_seq, wavelet_seq)
 
         # generate time_attn_mask & group_attn_mask using loss_mask (training) or attention_mask (inferencing)
         if attention_mask is None and loss_masks is None:
@@ -1127,85 +953,86 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
         if loss_masks is not None:
             attention_mask = loss_masks
 
-        time_attn_mask = self._prepare_time_attn_mask(
+        # generate 4d causal attn mask
+        causal_attn_mask = self._prepare_causal_attn_mask(
             attention_mask,
             (batch_size, token_num),
-            inputs_embeds
+            time_seq_embeds
         )
 
-        group_attn_mask = self._prepare_group_attn_mask(
-            attention_mask,
-            group_ids,
-            inputs_embeds
-        )
-
-        hidden_states = inputs_embeds
+        time_hidden_states, wavelet_hidden_states = time_seq_embeds, wavelet_seq_embeds
 
         # decoder layers
         # init output as config setting
-        all_hidden_states = () if output_hidden_states else None
-        all_time_attns = () if output_attentions else None
-        all_group_attns = () if output_attentions else None
+        all_time_hidden_states = () if output_hidden_states else None
+        all_time_self_attns = () if output_attentions else None
+
+        all_wavelet_hidden_states = () if output_hidden_states else None
+        all_wavelet_self_attns = () if output_attentions else None
+
         all_router_logits = ()
 
-        # forwarding through backbone layers
-        for decoder_layer in self.layers:
+        # forwarding through decoder layers
+        for decoder_layer in self.decoder_layers:
             if output_hidden_states:
-                all_hidden_states += (hidden_states,)
+                all_time_hidden_states += (time_hidden_states,)
+                all_wavelet_hidden_states += (wavelet_hidden_states, )
+
 
             # forward setting: load gradient checkpoint or normal forwarding
             if self.gradient_checkpointing and self.training:
                 layer_outputs = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
-                    hidden_states,
-                    time_attn_mask,
-                    group_attn_mask,
+                    time_hidden_states,
+                    wavelet_hidden_states,
+                    causal_attn_mask,
                     position_ids,
                     output_attentions
                 )
             else:
                 layer_outputs = decoder_layer(
-                    hidden_states,
-                    time_attn_mask=time_attn_mask,
-                    group_attn_mask=group_attn_mask,
+                    time_hidden_states,
+                    wavelet_hidden_states,
+                    causal_attn_mask=causal_attn_mask,
                     position_ids=position_ids,
                     output_attentions=output_attentions
                 )
 
             # hidden_states from layer output
-            hidden_states = layer_outputs["hidden_states"]
+            time_hidden_states = layer_outputs["time_hidden_states"]
+            wavelet_hidden_states = layer_outputs["wavelet_hidden_states"]
 
             # collect MoE router logits
             all_router_logits += (layer_outputs["router_logits"],)
 
             if output_attentions:
-                all_time_attns += (layer_outputs["time_attn_weights"],)
-                all_group_attns += (layer_outputs["group_attn_weights"],)
+                all_time_self_attns += (layer_outputs["time_self_attn_weights"],)
+                all_wavelet_self_attns += (layer_outputs["wavelet_self_attn_weights"],)
 
         # normalize last layer's hidden_states
-        hidden_states = self.norm(hidden_states)
+        time_hidden_states = self.norm(time_hidden_states)
+        wavelet_hidden_states = self.norm(wavelet_hidden_states)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
-            all_hidden_states += (hidden_states,)
+            all_time_hidden_states += (time_hidden_states,)
+            all_wavelet_hidden_states += (wavelet_hidden_states,)
 
-        # return
-        if not return_dict:
-            return tuple(
-                v
-                for v in [hidden_states, all_hidden_states, all_time_attns, all_group_attns, all_router_logits]
-                if v is not None
-            )
         return WaveletMoeModelOutputWithPast(
-            last_hidden_state=hidden_states,    
-            hidden_states=all_hidden_states,
-            time_attentions=all_time_attns,
-            gruop_attentions=all_group_attns,
+            last_time_hidden_state = time_hidden_states, 
+            last_wavelet_hidden_state = wavelet_hidden_states,
+
+            all_time_hidden_states = all_time_hidden_states,
+            all_wavelet_hidden_states = all_wavelet_hidden_states,
+
+            all_time_self_attns = all_time_self_attns,
+            all_wavelet_self_attns = all_wavelet_self_attns,
+
             router_logits=all_router_logits
         )
 
 
-class WaveletMoeOutputLayer(nn.Module):
+class WaveletMoeOutputLayer(torch.nn.Module):
     """
     Prediction head: a MLP from [batch_size, seq_len, hidden_size] → [batch_size, token_num, horizon_length, token_len], 
     mind that seq_len==token_num, input_size==token_len
@@ -1240,23 +1067,20 @@ class WaveletMoeOutputLayer(nn.Module):
         return out
 
 
-# Derived from from time_moe.models.modeling_time_moe.TimeMoeForPrediction with TimeMoe -> WaveletMoe
-# Edit the loss function to adpat patch-wise tokenization.
+# TODO: delete rebundent argments like output_attentions & return dict
 class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin):
 
     def __init__(self, config: WaveletMoeConfig):
         super().__init__(config)
         self.config = config
-        self.apply_aux_loss = config.apply_aux_loss
         self.num_experts_per_tok = config.num_experts_per_tok
         self.router_aux_loss_factor = config.router_aux_loss_factor
 
-        # self.model = input_layer + transformer_block * N
         self.model = WaveletMoeModel(config)
 
         # output layer
         lm_head_list = []
-        self.horizon_length_map = {}    # Mind this: horizon_length := token_len * predict_token_num == (patch_sz*2)*predict_token_num
+        self.horizon_length_map = {}
         for i, horizon_length in enumerate(config.horizon_lengths):
             lm_head_list.append(
                 WaveletMoeOutputLayer(
@@ -1296,32 +1120,32 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
 
     def forward(
             self,
-            input_ids: torch.FloatTensor = None,
-            group_ids: torch.Tensor = None,
+            time_seq: torch.FloatTensor = None,
+            wavelet_seq: torch.FloatTensor = None,
+
+            time_seq_embeds: Optional[torch.FloatTensor] = None,
+            wavelet_seq_embeds: Optional[torch.FloatTensor] = None,
+
             loss_masks: Optional[torch.FloatTensor] = None,
             labels: Optional[torch.FloatTensor] = None,
             attention_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
+            max_horizon_length: Optional[int] = None,
+            
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-            max_horizon_length: Optional[int] = None,
-            target_idx: Optional[Tuple[int]] = None
     ) -> Union[Tuple, WaveletMoeCausalLMOutputWithPast]:
         """
         Args:
-         input_ids:
-          `[batch_sz, token_num, token_len]`
-          - When training: `token_num` is the token nums of sample.
-          - When inferencing: `token_num` equals to token nums of prompt in first round of forward, \
-          after that `token_num` equals to token nums generated in last round of forward (`horizon_len` chosen in last forward).
-         group_ids: `[batch_sz, ]`
-         loss_masks: `[batch_sz, token_num]`
-         labels: `[batch_sz, token_num, token_len]`, use in training.
-         attention_mask: `None` or `[batch_sz, token_num]`
-         position_ids: `None` or `[batch_sz, token_num]`
-         inputs_embeds: `None` or `[batch_sz, token_num, hidden_size]`
+         time_seq: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`.
+         wavelet_seq: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`.
+         time_seq_embeds: `torch.FloatTensor`, shape `[batch_sz, token_num, hidden_sz]`.
+         wavelet_seq_embeds: `torch.FloatTensor`, shape `[batch_sz, token_num, hidden_sz]`.
+         loss_masks: `torch.FloatTensor`, shape `[batch_sz, token_num]`.
+         labels: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`, use in training.
+         attention_mask: `None` or `[batch_sz, token_num]`.
+         position_ids: `None` or `[batch_sz, token_num]`.
+         max_horizon_length: `None` or `int`, use in inferencing.
         """
 
         # output setting
@@ -1329,21 +1153,20 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
-            input_ids = input_ids,
-            group_ids = group_ids,
+            time_seq = time_seq,
+            wavelet_seq = wavelet_seq,
+            time_seq_embeds = time_seq_embeds,
+            wavelet_seq_embeds = wavelet_seq_embeds,
             loss_masks = loss_masks,
             attention_mask=attention_mask,
             position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
 
             # output setting
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
         )
 
         hidden_states = outputs[0]
@@ -1375,7 +1198,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
 
             if self.apply_aux_loss:
                 # len(router_logits)==num_layers, router_logits.shape==(batch_sz * token_num, expert_num)
-                router_logits = outputs.router_logits if return_dict else outputs[-1]
+                router_logits = outputs.router_logits
 
                 temporal_aux_loss = self.calc_load_balancing_loss(
                     router_logits,
@@ -1409,10 +1232,6 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
 
             if horizon_length > max_horizon_length:
                 predictions = predictions[:, :, :max_horizon_length, :]
-
-        if not return_dict:
-            output = (predictions,) + outputs[1:]
-            return (loss, aux_loss) + output if loss is not None else output
 
         return WaveletMoeCausalLMOutputWithPast(
             loss=loss,
@@ -1710,8 +1529,9 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         return load_balancing_loss
 
 
+    # TODO: merge loss_masks & attn_mask here.
     def prepare_inputs_for_generation(
-            self, input_ids, group_ids, attention_mask=None, inputs_embeds=None, **kwargs
+        self, input_ids, group_ids, attention_mask=None, inputs_embeds=None, **kwargs
     ):
         """
         Data format prepration for auto-regression input. Including KV Cache management, position ID gengeration and

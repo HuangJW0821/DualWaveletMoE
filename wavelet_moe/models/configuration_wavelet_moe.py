@@ -9,7 +9,7 @@ class WaveletMoeConfig(PretrainedConfig):
 
     def __init__(
             self,
-            input_size: int = 1,
+            patch_size: int = 8,
             hidden_size: int = 4096,
             intermediate_size: int = 22016,
             horizon_lengths: List[int] = 1,
@@ -22,14 +22,10 @@ class WaveletMoeConfig(PretrainedConfig):
             max_position_embeddings: int = 32768,
             initializer_range: float = 0.02,
             rms_norm_eps: float = 1e-6,
-            use_cache: bool = True,
-            use_dense: bool = False,
             rope_theta: int = 10000,
             attention_dropout: float = 0.0,
-            apply_aux_loss: bool = True,
             router_aux_loss_factor: float = 0.02,
             tie_word_embeddings: bool = False,
-            patch_size: int = 8,
             wavelet_function: str = "bior2.2",
             wavelet_signal_extension_mode: str = "periodization",
             wavelet_dwt_level: int = 2,
@@ -53,11 +49,8 @@ class WaveletMoeConfig(PretrainedConfig):
         self.num_experts = num_experts
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
-        self.use_cache = use_cache
-        self.use_dense = use_dense
         self.rope_theta = rope_theta
         self.attention_dropout = attention_dropout
-        self.apply_aux_loss = apply_aux_loss
         self.router_aux_loss_factor = router_aux_loss_factor
 
         assert self.use_dense ^ self.apply_aux_loss, 'Both use_dense and apply_aux_loss cannot be set to True or False at the same time.'
@@ -65,7 +58,7 @@ class WaveletMoeConfig(PretrainedConfig):
         if patch_size%2 != 0:
             raise ValueError(f"Patch size should be multiple of 2, not {patch_size}.")
         self.patch_size = patch_size
-        self.input_size = patch_size * 2
+        self.input_size = patch_size
         
         if isinstance(horizon_lengths, int):
             horizon_lengths = [horizon_lengths]
