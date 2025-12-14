@@ -5,7 +5,6 @@ from typing import Optional, Tuple, List, Union
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch import nn
 from transformers import PreTrainedModel, Cache, DynamicCache, StaticCache
 from transformers.activations import ACT2FN
@@ -320,6 +319,7 @@ class WaveletMoeEmbeddingLayer(torch.nn.Module):
         emb = self.act_fn(self.gate_layer(x)) * self.emb_layer(x)
         return emb
 
+
 class WaveletMoeInputLayer(torch.nn.Module):
     """
     Input layer of WaveletMoE, contains two embedding layers, respectively for time sequence & wavelet coefficient sequence.
@@ -399,9 +399,9 @@ class WaveletMoeRMSNorm(torch.nn.Module):
         return self.weight * hidden_states.to(input_dtype)
 
 
-class WaveletMoeTemporalBlock(torch.nn.Module):
+class WaveletMoeMLPBlock(torch.nn.Module):
     """
-    Tempolate for FFN, used in MoE layer and dense model
+    Tempolate for MLP, used in MoE layer and dense model
     """
     def __init__(self, hidden_size: int, intermediate_size: int, hidden_act: str):
         super().__init__()
@@ -416,9 +416,9 @@ class WaveletMoeTemporalBlock(torch.nn.Module):
         return self.down_proj(self.act_fn(self.gate_proj(hidden_state)) * self.up_proj(hidden_state))
 
 
-class WaveletMoeMLP(WaveletMoeTemporalBlock):
+class WaveletMoeDenseFFN(WaveletMoeMLPBlock):
     """
-    Wrapper of class WaveletMoeTemporalBlock
+    Wrapper of class WaveletMoeMLPBlock, use in ablation.
     """
     def __init__(self, hidden_size: int, intermediate_size: int, hidden_act: str):
         super().__init__(hidden_size, intermediate_size, hidden_act)
@@ -427,47 +427,120 @@ class WaveletMoeMLP(WaveletMoeTemporalBlock):
         return super().forward(hidden_state), None
 
 
-class WaveletMoeSparseExpertsLayer(torch.nn.Module):
-    def __init__(self, config):
+class WaveletMoeDualRouter(torch.nn.Module):
+    """
+    Router for dual MoE, combining time-sequence & wavelet coeff information for routing.
+    """
+
+    def __init__(self, config: WaveletMoeConfig):
+        self.hidden_size = config.hidden_size
+        self.before_routing_norm = WaveletMoeRMSNorm(config.hidden_size * 2, eps = config.rms_norm_eps)
+        self.routed_experts_gate = torch.nn.Linear(config.hidden_size * 2, config.num_experts, bias=False)
+        self.shared_experts_gate = torch.nn.Linear(config.hidden_size * 2, 1, bias=False)
+
+    def forward(
+        self,
+        time_hidden_states: torch.FloatTensor,
+        wavelet_hidden_states: torch.FloatTensor,
+    ):
+        """
+        Calculate router logits for routed experts & shared experts, 
+        combining time-sequence & wavelet coeff information for routing.
+
+        Args:
+         time_hidden_states (`torch.FloatTensor`): shape `[batch_sz * token_num, hidden_sz]`.
+         wavelet_hidden_states (`torch.FloatTensor`): shape `[batch_sz * token_num, hidden_sz]`.
+        
+        Returns:
+         (routed_experts_router_logits, shared_experts_router_logits):
+         - **routed_experts_router_logits**: (`torch.FloatTensor`), shape `[batch_sz * token_num, routed_experts_num]`.
+         - **shared_experts_router_logits**: (`torch.FloatTensor`), shape `[batch_sz * token_num, shared_experts_num]`, `shared_experts_num==1` by default.
+        """
+
+        # shape [batch_sz * token_num, hidden_sz * 2]
+        concat_hidden_states = torch.cat([time_hidden_states, wavelet_hidden_states], dim=1)
+
+        # normalize between time & wavelet modality
+        concat_hidden_states = self.before_routing_norm(concat_hidden_states)
+
+        # routing for routed experts, shape [batch_sz * token_num, hidden_sz * 2]
+        routed_experts_router_logits = self.routed_experts_gate(concat_hidden_states)
+
+        # routing for shared experts, shape `[batch_sz * token_num, shared_experts_num]`, `shared_experts_num==1` by default.
+        shared_experts_router_logits = self.shared_experts_gate(concat_hidden_states)
+
+        return routed_experts_router_logits, shared_experts_router_logits
+        
+
+class WaveletMoeExpertBlock(torch.nn.Module):
+    """
+    Expert block in dual MoE, contains two MLP respectively for time-series & wavelet coeff hidden states.
+    """
+    
+    def __init__(self, hidden_size: int, intermediate_size: int, hidden_act: str):
+        self.time_expert_mlp = WaveletMoeMLPBlock(hidden_size, intermediate_size, hidden_act)
+        self.wavelet_expert_mlp = WaveletMoeMLPBlock(hidden_size, intermediate_size, hidden_act)
+    
+    def forward(self, time_hidden_states: torch.FloatTensor, )
+
+
+
+class WaveletMoeDualMoeLayer(torch.nn.Module):
+    """
+    MoE with dual-modality routering & residual add.
+    """
+    def __init__(self, config: WaveletMoeConfig):
         super().__init__()
         self.config = config
         self.top_k = config.num_experts_per_tok     # top-k per token
         self.hidden_size = config.hidden_size
         self.num_experts = config.num_experts
-        self.norm_topk_prob = False
 
         # scaling expert's intermediate layer's size, s.t. keep compute cost
         moe_intermediate_size = self.config.intermediate_size // self.top_k
 
-        # gating
-        self.gate = nn.Linear(config.hidden_size, config.num_experts, bias=False)
-        self.experts = nn.ModuleList(
-            [WaveletMoeTemporalBlock(
-                hidden_size=self.config.hidden_size,
-                intermediate_size=moe_intermediate_size,
-                hidden_act=self.config.hidden_act,
+        self.router = WaveletMoeDualRouter(config)
+
+        self.routed_experts = nn.ModuleList(
+            [WaveletMoeDualRouter(
+                hidden_size = self.config.hidden_size,
+                intermediate_size = moe_intermediate_size,
+                hidden_act = self.config.hidden_act,
             ) for _ in range(self.num_experts)]
         )
 
         # shared expert with individual gate
-        self.shared_expert = WaveletMoeTemporalBlock(
-            hidden_size=self.config.hidden_size,
-            intermediate_size=self.config.intermediate_size,
-            hidden_act=self.config.hidden_act,
+        self.shared_expert = WaveletMoeDualRouter(
+            hidden_size = self.config.hidden_size,
+            intermediate_size = self.config.intermediate_size,
+            hidden_act = self.config.hidden_act,
         )
         self.shared_expert_gate = torch.nn.Linear(config.hidden_size, 1, bias=False)
 
-    def forward(self, hidden_states: torch.Tensor):
-        batch_size, sequence_length, hidden_dim = hidden_states.shape
-        hidden_states = hidden_states.view(-1, hidden_dim)
+    def forward(
+        self, 
+        time_hidden_states: torch.FloatTensor,
+        wavelet_hidden_states: torch.FloatTensor,
+    ):
+        """
+        Args:
+         time_hidden_states (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+         wavelet_hidden_states (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+        """
+
+        batch_sz, token_num, hidden_sz = time_hidden_states.shape
+
+        # shape [batch_sz * token_num, hidden_sz]
+        time_hidden_states = time_hidden_states.view(-1, hidden_sz)
+        wavelet_hidden_states = wavelet_hidden_states.view(-1, hidden_sz)
+        
         # router_logits -> (batch * sequence_length, n_experts)
-        router_logits = self.gate(hidden_states)    # gating
+        routed_experts_router_logits,  shared_experts_router_logits = self.router(time_hidden_states, wavelet_hidden_states)
 
         # calculate routing weights: softmax & top-k
-        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights = nn.functional.softmax(router_logits, dim=1, dtype=torch.float)
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
-        if self.norm_topk_prob:
-            routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        
         # we cast back to the input dtype
         routing_weights = routing_weights.to(hidden_states.dtype)
         
@@ -499,19 +572,13 @@ class WaveletMoeSparseExpertsLayer(torch.nn.Module):
 
         # forward through shared expert
         shared_expert_output = self.shared_expert(hidden_states)
-        shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states)) * shared_expert_output
+        shared_expert_output = nn.functional.sigmoid(self.shared_expert_gate(hidden_states)) * shared_expert_output
 
         # fuse selected expert's outputs & shared expert's output
         final_hidden_states = final_hidden_states + shared_expert_output
 
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
         return final_hidden_states, router_logits
-
-
-class WaveletMoeDualMoeLayer(torch.nn.Module):
-    """
-    MoE with dual-modality routering & residual add.
-    """
 
 
 class WaveletMoeFilteredMHABlock(torch.nn.Module):
@@ -777,7 +844,6 @@ class WaveletMoeDualAttentionLayer(torch.nn.Module):
         return time_hidden_states, wavelet_hidden_states, time_attn_weights, wavelet_attn_weights
 
 
-
 class WaveletMoeDecoderLayer(torch.nn.Module):
     """
     Implement of WaveletMoE transformer block
@@ -796,7 +862,7 @@ class WaveletMoeDecoderLayer(torch.nn.Module):
         if self.config.use_dense:
             # TODO: potential ablation setting
             raise NotImplementedError("Dense FFN not yet implemented for dual attention setting")
-            self.ffn_layer = WaveletMoeMLP(
+            self.ffn_layer = WaveletMoeDenseFFN(
                 hidden_size=self.config.hidden_size,
                 intermediate_size=self.config.intermediate_size,
                 hidden_act=self.config.hidden_act,
