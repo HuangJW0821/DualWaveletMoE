@@ -38,7 +38,7 @@ class WaveletMoeModelOutputWithPast(ModelOutput):
             
             Attentions weights of wavelet coeff sequence after the attention softmax, used to compute the weighted average in the self-attention heads.
            
-        router_logits: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_router_probs=True` and `config.add_router_probs=True` is passed or when `config.output_router_probs=True`)
+        all_router_logits: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_router_probs=True` and `config.add_router_probs=True` is passed or when `config.output_router_probs=True`)
             Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_sz, token_num, expert_num)`.
 
             Raw router logtis (post-softmax) that are computed by MoE routers, these terms are used to compute the auxiliary loss for Mixture of Experts models.
@@ -50,7 +50,7 @@ class WaveletMoeModelOutputWithPast(ModelOutput):
     all_wavelet_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
     all_time_self_attns: Optional[Tuple[torch.FloatTensor, ...]] = None
     all_wavelet_self_attns: Optional[Tuple[torch.FloatTensor, ...]] = None
-    router_logits: Optional[Tuple[torch.FloatTensor]] = None
+    all_router_logits: Optional[Tuple[torch.FloatTensor]] = None
 
 
 # Derived from transformers.modeling_outputs.MoeCausalLMOutputWithPast, modify to adapt time & group attn

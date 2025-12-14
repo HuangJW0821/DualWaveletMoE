@@ -519,16 +519,9 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
     Multi-headed attention with KV filtering & droupout.
     """
 
-    def __init__(self, config: WaveletMoeConfig, layer_idx: Optional[int] = None):
+    def __init__(self, config: WaveletMoeConfig):
         super().__init__()
         self.config = config
-        self.layer_idx = layer_idx
-        if layer_idx is None:
-            logger.warning_once(
-                f"Instantiating {self.__class__.__name__} without passing `layer_idx` is not recommended and will "
-                "to errors during the forward call, if caching is used. Please make sure to provide a `layer_idx` "
-                "when creating this class."
-            )
 
         # attention head config, num_query_head (num_heads) >= num_kv_head in GQA
         self.hidden_size = config.hidden_size
@@ -561,27 +554,63 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
             max_position_embeddings=self.max_position_embeddings,
             base=self.rope_theta,
         )
+    
+    def _select_topk_kv(
+        self, 
+        attn_weights: torch.FloatTensor, 
+        causal_attn_mask: torch.FloatTensor
+    ):
+        """
+        Select topk KV pair by ranking Q@K^T and update attention mask.
+
+        Args:
+         attn_weights: shape `[batch_sz, head_num, q_len, kv_len]`
+         causal_attn_mask: shape `[batch_sz, 1, q_len, kv_len]`, a down traingle 4d attn mask
+        
+        Returns:
+         causal_attn_mask: shape `[batch_sz, head_num, q_len, kv_len]
+        """
+
+        topk = self.config.topk_kv
+        bsz, head_num, q_len, kv_len = attn_weights.shape
+
+        # broadcast causal mask to head_num
+        causal_attn_mask = causal_attn_mask.expand(-1, head_num, -1, -1)
+
+        # mask future token before select topk
+        masked_attn_scores = attn_weights + causal_attn_mask
+
+        # select topk along kv_len
+        _, topk_indices = torch.topk(masked_attn_scores, k = min(topk, kv_len), dim=-1)
+
+        # build topk mask
+        topk_mask = torch.full_like(masked_attn_scores, float("-inf"))
+        topk_mask.scatter_(dim = -1, index = topk_indices, value = 0.0)
+
+        causal_attn_mask = causal_attn_mask + topk_mask
+
+        return causal_attn_mask
 
     def forward(
             self,
-            hidden_states: torch.Tensor,
-            attention_mask: torch.Tensor,
+            hidden_states: torch.FloatTensor,
+            causal_attn_mask: torch.Tensor,
             position_ids: Optional[torch.LongTensor] = None,
             output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """
-        Classic MHA.
+        MHA, select top-k KV pair by ranking Q@K^T, in order to filter outliers & anomalies.
 
         Args:
          hidden_states: `[batch_sz, q_len, hidden_sz]`
-         attention_mask: `[batch_sz, 1, q_len, kv_len]`
+         causal_attn_mask: `[batch_sz, 1, q_len, kv_len]`
          position_ids: `[batch_sz, q_len]`
          output_attentions: `bool`
         
         Returns:
          (attn_output, attn_weights):
          - attn_output: `[batch_sz, q_len, hidden_sz]`
-         - attn_weifhts: `None` or `[batch_sz, num_heads, q_len, kv_len]`
+         - attn_weights: `None` or `[batch_sz, head_num, q_len, kv_len]`
         """
         
         # forward thourgh projection layers
@@ -615,21 +644,20 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
         # shape [batch_sz, num_heads, q_len, kv_len]
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Time attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
-            )
+        if attn_weights.size() != (bsz, 1, q_len, kv_seq_len):
+            raise ValueError(f"Self attention weights should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attn_weights.size()}")
 
         # masking attention weights with attn_mask
-        if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Time Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
+        if causal_attn_mask is not None:
+
+            if causal_attn_mask.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+                raise ValueError(f"Time Attention mask should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is {causal_attn_mask.size()}")
+            
+            if self.config.use_topk_kv:
+                causal_attn_mask = self._select_topk_kv(attn_weights, causal_attn_mask)
             
             # apply mask
-            attn_weights = attn_weights + attention_mask
+            attn_weights = attn_weights + causal_attn_mask
 
         # forward through softmax & dropout
         # upcast attention to fp32
@@ -663,6 +691,44 @@ class WaveletMoeAttentionBlock(torch.nn.Module):
     """
     Attention block: Layer norm -> Filter MHA & droupout -> Redisual add -> LayerNorm
     """
+    def __init__(self, config: WaveletMoeConfig):
+        super().__init__()
+        self.before_attn_layernorm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.self_attn = WaveletMoeFilteredMHABlock(config)
+        self.post_attn_layernorm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+    
+    def forward(
+        self,
+        hidden_states: torch.FloatTensor,
+        causal_attn_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        output_attentions: Optional[bool] = False
+    ):
+        """
+        Args:
+         hidden_states (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+         causal_attn_mask (`torch.Tensor`, *optional*): shape `[batch_sz, 1, q_len, kv_len]`.
+         position_ids (`torch.LongTensor`, *optional*): shape `[batch_size, token_num]`.
+         output_attentions (`bool`, *optional*):
+        
+        Returns:
+         (hidden_states, attn_weights):
+         - hidden_states: `[batch_sz, token_num, hidden_sz]`
+         - attn_weights: `None` or `[batch_sz, head_num, q_len, kv_len]`
+        """
+
+        residual = hidden_states
+        hidden_states = self.before_attn_layernorm(hidden_states)
+        hidden_states, attn_weights = self.self_attn(
+            hidden_states = hidden_states,
+            causal_attn_mask = causal_attn_mask,
+            position_ids = position_ids,
+            output_attentions = output_attentions
+        )
+        hidden_states = residual + hidden_states
+        hidden_states = self.post_attn_layernorm(hidden_states)
+        
+        return hidden_states, attn_weights
 
 
 class WaveletMoeDualAttentionLayer(torch.nn.Module):
@@ -689,10 +755,26 @@ class WaveletMoeDualAttentionLayer(torch.nn.Module):
          causal_attn_mask (`torch.Tensor`, *optional*): shape `[batch_sz, 1, q_len, kv_len]`.
          position_ids (`torch.LongTensor`, *optional*): shape `[batch_size, token_num]`.
          output_attentions (`bool`, *optional*):
+        
+        Returns:
+         (time_hidden_states, wavelet_hidden_states, time_attn_weights, wavelet_attn_weights):
         """
 
-        time_hidden_states, time_attn_weights = 1, 1
-        return
+        time_hidden_states, time_attn_weights = self.time_attn_block(
+            hidden_states = time_hidden_states,
+            causal_attn_mask = causal_attn_mask,
+            position_ids = position_ids,
+            output_attentions = output_attentions
+        )
+
+        wavelet_hidden_states, wavelet_attn_weights = self.wavelet_attn_block(
+            hidden_states = wavelet_hidden_states,
+            causal_attn_mask = causal_attn_mask,
+            position_ids = position_ids,
+            output_attentions = output_attentions
+        )
+
+        return time_hidden_states, wavelet_hidden_states, time_attn_weights, wavelet_attn_weights
 
 
 
@@ -709,7 +791,6 @@ class WaveletMoeDecoderLayer(torch.nn.Module):
         # Dual Filtered MHA
         # TODO: add setting for potential ablation
         self.dual_attn_layer = WaveletMoeDualAttentionLayer(config)
-
 
         # MoE or dense FFN
         if self.config.use_dense:
@@ -738,6 +819,13 @@ class WaveletMoeDecoderLayer(torch.nn.Module):
          causal_attn_mask (`torch.Tensor`, *optional*): shape `[batch_sz, 1, q_len, kv_len]`.
          position_ids (`torch.LongTensor`, *optional*): shape `[batch_size, token_num]`.
          output_attentions (`bool`, *optional*):
+        
+        Returns:
+        - **time_hidden_states**: `torch.FloatTensor`, shape `[batch_sz, token_num, hidden_sz]`.
+        - **wavelet_hidden_states**: `torch.FloatTensor`, shape `[batch_sz, token_num, hidden_sz]`.
+        - **time_attn_weights**: `tuple(torch.FloatTensor)`, *optional*
+        - **wavelet_attn_weights**: `tuple(torch.FloatTensor)`, *optional*
+        - **router_logits**: `tuple(torch.FloatTensor)`, *optional*
         """
 
         # if self.config.use_group_attn:
@@ -775,7 +863,7 @@ class WaveletMoeDecoderLayer(torch.nn.Module):
             wavelet_attn_weights = None
         
         return {
-            "time_hidden_states": time_attn_weights,
+            "time_hidden_states": time_hidden_states,
             "wavelet_hidden_states": wavelet_hidden_states,
             "time_attn_weights": time_attn_weights,
             "wavelet_attn_weights": wavelet_attn_weights,
@@ -824,7 +912,8 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
             [WaveletMoeDecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
 
-        self.norm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.time_norm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.wavelet_norm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
 
@@ -892,6 +981,9 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
         
          output_attentions: output setting, load from self.config.
          ouput_hidden_states: output setting, load from self.config.
+        
+        Returns:
+         WaveletMoeModelOutputWithPast: 
         """
 
         # set default param
@@ -964,7 +1056,7 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
 
             # forward setting: load gradient checkpoint or normal forwarding
             if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
+                decoder_layer_output = self._gradient_checkpointing_func(
                     decoder_layer.__call__,
                     time_hidden_states,
                     wavelet_hidden_states,
@@ -973,7 +1065,7 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
                     output_attentions
                 )
             else:
-                layer_outputs = decoder_layer(
+                decoder_layer_output = decoder_layer(
                     time_hidden_states,
                     wavelet_hidden_states,
                     causal_attn_mask=causal_attn_mask,
@@ -982,19 +1074,19 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
                 )
 
             # hidden_states from layer output
-            time_hidden_states = layer_outputs["time_hidden_states"]
-            wavelet_hidden_states = layer_outputs["wavelet_hidden_states"]
-
-            # collect MoE router logits
-            all_router_logits += (layer_outputs["router_logits"],)
+            time_hidden_states = decoder_layer_output["time_hidden_states"]
+            wavelet_hidden_states = decoder_layer_output["wavelet_hidden_states"]
 
             if output_attentions:
-                all_time_self_attns += (layer_outputs["time_self_attn_weights"],)
-                all_wavelet_self_attns += (layer_outputs["wavelet_self_attn_weights"],)
+                all_time_self_attns += (decoder_layer_output["time_self_attn_weights"],)
+                all_wavelet_self_attns += (decoder_layer_output["wavelet_self_attn_weights"],)
+            
+            # collect MoE router logits
+            all_router_logits += (decoder_layer_output["router_logits"],)
 
         # normalize last layer's hidden_states
-        time_hidden_states = self.norm(time_hidden_states)
-        wavelet_hidden_states = self.norm(wavelet_hidden_states)
+        time_hidden_states = self.time_norm(time_hidden_states)
+        wavelet_hidden_states = self.wavelet_norm(wavelet_hidden_states)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -1004,14 +1096,11 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
         return WaveletMoeModelOutputWithPast(
             last_time_hidden_state = time_hidden_states, 
             last_wavelet_hidden_state = wavelet_hidden_states,
-
             all_time_hidden_states = all_time_hidden_states,
             all_wavelet_hidden_states = all_wavelet_hidden_states,
-
             all_time_self_attns = all_time_self_attns,
             all_wavelet_self_attns = all_wavelet_self_attns,
-
-            router_logits=all_router_logits
+            all_router_logits = all_router_logits
         )
 
 

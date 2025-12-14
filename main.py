@@ -156,8 +156,6 @@ if __name__ == "__main__":
     parser.add_argument("--wavelet_signal_extension_mode", type=str, default="periodization")
     parser.add_argument("--wavelet_dwt_level", type=int, default=2)
 
-    parser.add_argument("--loss_func", type=str, choices=["huber", "mse"], default="huber")
-
     args = parser.parse_args()
 
     if args.normalization_method == "none":

@@ -22,15 +22,18 @@ class WaveletMoeConfig(PretrainedConfig):
             max_position_embeddings: int = 32768,
             initializer_range: float = 0.02,
             rms_norm_eps: float = 1e-6,
+            use_dense: bool = False,
             rope_theta: int = 10000,
             attention_dropout: float = 0.0,
+            apply_aux_loss: bool = True,
             router_aux_loss_factor: float = 0.02,
             tie_word_embeddings: bool = False,
             wavelet_function: str = "bior2.2",
             wavelet_signal_extension_mode: str = "periodization",
             wavelet_dwt_level: int = 2,
             loss_func: str = "huber",
-            time_axis_loss_factor: float = 0.5,
+            use_topk_kv: bool = True,
+            topk_kv: int = None,
             **kwargs,
     ):  
         self.hidden_size = hidden_size
@@ -49,8 +52,10 @@ class WaveletMoeConfig(PretrainedConfig):
         self.num_experts = num_experts
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
+        self.use_dense = use_dense
         self.rope_theta = rope_theta
         self.attention_dropout = attention_dropout
+        self.apply_aux_loss = apply_aux_loss
         self.router_aux_loss_factor = router_aux_loss_factor
 
         assert self.use_dense ^ self.apply_aux_loss, 'Both use_dense and apply_aux_loss cannot be set to True or False at the same time.'
@@ -68,7 +73,11 @@ class WaveletMoeConfig(PretrainedConfig):
         self.wavelet_signal_extension_mode = wavelet_signal_extension_mode
         self.wavelet_dwt_level = wavelet_dwt_level
         self.loss_func = loss_func
-        self.time_axis_loss_factor = time_axis_loss_factor
+
+        self.use_topk_kv = use_topk_kv
+        self.topk_kv = topk_kv
+        if use_topk_kv and topk_kv is None:
+            raise ValueError(f"topk_kv should not be None if filter MHA is used.")
 
         kwargs.pop('tie_word_embeddings', None)
         super().__init__(
