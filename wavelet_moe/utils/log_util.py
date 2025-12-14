@@ -6,7 +6,7 @@ import sys
 import typing
 
 # -------- log setting ---------
-DEFAULT_LOGGER = "time_moe_logger"
+DEFAULT_LOGGER = "wavelet_moe_logger"
 
 DEFAULT_FORMATTER = logging.Formatter(
     '%(asctime)s - %(filename)s[pid:%(process)d;line:%(lineno)d:%(funcName)s] - %(levelname)s: %(message)s'

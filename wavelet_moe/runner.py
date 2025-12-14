@@ -10,8 +10,8 @@ from wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesSingleDataset, Ti
 from wavelet_moe.datasets.wavelet_data_collator import WaveletTimeSeriesDataCollator
 from wavelet_moe.models.modeling_wavelet_moe import WaveletMoeForPrediction, WaveletMoeConfig
 from wavelet_moe.trainer.hf_trainer import WaveletMoETrainingArguments, WaveletMoeTrainer
-from time_moe.utils.dist_util import get_world_size
-from time_moe.utils.log_util import logger, log_in_local_rank_0
+from wavelet_moe.utils.dist_util import get_world_size
+from wavelet_moe.utils.log_util import logger, log_in_local_rank_0
 
 
 class WaveletMoeRunner:
