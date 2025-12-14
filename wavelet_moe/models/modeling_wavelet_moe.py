@@ -508,9 +508,15 @@ class WaveletMoeSparseExpertsLayer(torch.nn.Module):
         return final_hidden_states, router_logits
 
 
-class WaveletMoeTimeAttention(torch.nn.Module):
+class WaveletMoeDualMoeLayer(torch.nn.Module):
     """
-    Multi-headed attention from 'Attention Is All You Need' paper with kv cache.
+    MoE with dual-modality routering & residual add.
+    """
+
+
+class WaveletMoeFilteredMHABlock(torch.nn.Module):
+    """
+    Multi-headed attention with KV filtering & droupout.
     """
 
     def __init__(self, config: WaveletMoeConfig, layer_idx: Optional[int] = None):
@@ -562,7 +568,6 @@ class WaveletMoeTimeAttention(torch.nn.Module):
             attention_mask: torch.Tensor,
             position_ids: Optional[torch.LongTensor] = None,
             output_attentions: bool = False,
-            **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         """
         Classic MHA.
@@ -578,11 +583,6 @@ class WaveletMoeTimeAttention(torch.nn.Module):
          - attn_output: `[batch_sz, q_len, hidden_sz]`
          - attn_weifhts: `None` or `[batch_sz, num_heads, q_len, kv_len]`
         """
-        
-        if "padding_mask" in kwargs:
-            warnings.warn(
-                "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
-            )
         
         # forward thourgh projection layers
         bsz, q_len, _ = hidden_states.size()
@@ -659,6 +659,43 @@ class WaveletMoeTimeAttention(torch.nn.Module):
         return attn_output, attn_weights
 
 
+class WaveletMoeAttentionBlock(torch.nn.Module):
+    """
+    Attention block: Layer norm -> Filter MHA & droupout -> Redisual add -> LayerNorm
+    """
+
+
+class WaveletMoeDualAttentionLayer(torch.nn.Module):
+    """
+    Attention layer contain two parallel attention block, respectively for time-series sequences & wavelet coeff sequences.
+    """
+    def __init__(self, config: WaveletMoeConfig):
+        super().__init__()
+        self.time_attn_block = WaveletMoeAttentionBlock(config)
+        self.wavelet_attn_block = WaveletMoeAttentionBlock(config)
+    
+    def forward(
+        self,
+        time_hidden_states: torch.FloatTensor,
+        wavelet_hidden_states: torch.FloatTensor,
+        causal_attn_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        output_attentions: Optional[bool] = False
+    ):
+        """
+        Args:
+         time_seq_embeds (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+         wavelet_seq_embeds (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+         causal_attn_mask (`torch.Tensor`, *optional*): shape `[batch_sz, 1, q_len, kv_len]`.
+         position_ids (`torch.LongTensor`, *optional*): shape `[batch_size, token_num]`.
+         output_attentions (`bool`, *optional*):
+        """
+
+        time_hidden_states, time_attn_weights = 1, 1
+        return
+
+
+
 class WaveletMoeDecoderLayer(torch.nn.Module):
     """
     Implement of WaveletMoE transformer block
@@ -667,131 +704,81 @@ class WaveletMoeDecoderLayer(torch.nn.Module):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
+        self.layer_idx = layer_idx
 
-        if self.config.use_group_attn:
-            # Time Attention
-            self.time_attn = WaveletMoeTimeAttention(config, layer_idx)
+        # Dual Filtered MHA
+        # TODO: add setting for potential ablation
+        self.dual_attn_layer = WaveletMoeDualAttentionLayer(config)
 
-            # Group Attention
-            self.group_attn = WaveletMoeGroupAttention(config, layer_idx)
-        
-        
-        else:
-            if self.config.use_channel_axis_loss:
-                self.time_attn = WaveletMoeTimeAttention(config, layer_idx)
-            else:
-                # adaption for previous univariate version chekcpoint, should delete when release
-                self.self_attn = WaveletMoeTimeAttention(config, layer_idx)
 
         # MoE or dense FFN
         if self.config.use_dense:
+            # TODO: potential ablation setting
+            raise NotImplementedError("Dense FFN not yet implemented for dual attention setting")
             self.ffn_layer = WaveletMoeMLP(
                 hidden_size=self.config.hidden_size,
                 intermediate_size=self.config.intermediate_size,
                 hidden_act=self.config.hidden_act,
             )
         else:
-            self.ffn_layer = WaveletMoeSparseExpertsLayer(config)
-        
-        # Before- , Between- & After-Attention Norm layer
-        if self.config.use_group_attn:
-            self.before_attention_layernorm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-            self.inter_attention_layernorm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        else:
-            if self.config.use_channel_axis_loss:
-                self.before_attention_layernorm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-            else:
-                # no inter attention norm layer for previous univariate version chekcpoint
-                self.input_layernorm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        
-        self.post_attention_layernorm = WaveletMoeRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+            self.ffn_layer = WaveletMoeDualMoeLayer(config)
 
     def forward(
             self,
-            hidden_states: torch.Tensor,
-            time_attn_mask: Optional[torch.Tensor] = None,
-            group_attn_mask: Optional[torch.Tensor] = None,
+            time_hidden_states: torch.FloatTensor,
+            wavelet_hidden_states: torch.FloatTensor,
+            causal_attn_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
-            output_attentions: Optional[bool] = False,
-            **kwargs,
+            output_attentions: Optional[bool] = False
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, Optional[torch.FloatTensor], Optional[torch.FloatTensor]]:
         """
         Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, 1, q_len, kv_len)` where padding elements are indicated by 0.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail. 
+         time_seq_embeds (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+         wavelet_seq_embeds (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+         causal_attn_mask (`torch.Tensor`, *optional*): shape `[batch_sz, 1, q_len, kv_len]`.
+         position_ids (`torch.LongTensor`, *optional*): shape `[batch_size, token_num]`.
+         output_attentions (`bool`, *optional*):
         """
-        if "padding_mask" in kwargs:
-            warnings.warn(
-                "Passing `padding_mask` is deprecated and will be removed in v4.37. "
-                "Please make sure use `attention_mask` instead.`"
-            )
 
-        if self.config.use_group_attn:
-            # Time Attention Layer
-            residual = hidden_states
-            hidden_states = self.before_attention_layernorm(hidden_states)
-            hidden_states, time_attn_weights = self.time_attn(
-                hidden_states=hidden_states,
-                attention_mask=time_attn_mask,
-                position_ids=position_ids,
-                output_attentions=output_attentions
-            )
-            hidden_states = residual + hidden_states
-
-            # Group Attention Layer
-            residual = hidden_states
-            hidden_states = self.inter_attention_layernorm(hidden_states)
-            hidden_states, group_attn_weights = self.group_attn(
-                hidden_states=hidden_states,
-                attention_mask=group_attn_mask,
-                position_ids=position_ids,
-                output_attentions=output_attentions
-            )
-            hidden_states = residual + hidden_states
+        # if self.config.use_group_attn:
+        #     # Time Attention Layer
+        #     residual = hidden_states
+        #     hidden_states = self.before_attention_layernorm(hidden_states)
+        #     hidden_states, time_attn_weights = self.time_attn(
+        #         hidden_states=hidden_states,
+        #         attention_mask=time_attn_mask,
+        #         position_ids=position_ids,
+        #         output_attentions=output_attentions
+        #     )
+        #     hidden_states = residual + hidden_states
         
-        else:
-            if self.config.use_channel_axis_loss:
-                residual = hidden_states
-                hidden_states = self.before_attention_layernorm(hidden_states)
-                hidden_states, time_attn_weights = self.time_attn(
-                    hidden_states=hidden_states,
-                    attention_mask=time_attn_mask,
-                    position_ids=position_ids,
-                    output_attentions=output_attentions
-                )
-                hidden_states = residual + hidden_states
-            else:
-                residual = hidden_states
-                hidden_states = self.input_layernorm(hidden_states)
-                hidden_states, time_attn_weights = self.self_attn(
-                    hidden_states=hidden_states,
-                    attention_mask=time_attn_mask,
-                    position_ids=position_ids,
-                    output_attentions=output_attentions
-                )
-                hidden_states = residual + hidden_states
+        # # Feed Forward Layer
+        # residual = hidden_states
+        # hidden_states = self.post_attention_layernorm(hidden_states)
+        # hidden_states, router_logits = self.ffn_layer(hidden_states)
+        # hidden_states = residual + hidden_states
 
-            group_attn_weights = None
+        # Dual Attn Layer
+        time_hidden_states, wavelet_hidden_states, time_attn_weights, wavelet_attn_weights = self.dual_attn_layer(
+            time_hidden_states,
+            wavelet_hidden_states,
+            causal_attn_mask,
+            position_ids,
+            output_attentions
+        )
 
-        # Feed Forward Layer
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states, router_logits = self.ffn_layer(hidden_states)
-        hidden_states = residual + hidden_states
+        time_hidden_states, wavelet_hidden_states, router_logits = self.ffn_layer(time_hidden_states, wavelet_hidden_states)
 
         # output settings
         if not output_attentions:
             time_attn_weights = None
-            group_attn_weights = None
+            wavelet_attn_weights = None
         
         return {
-            "hidden_states": hidden_states,
+            "time_hidden_states": time_attn_weights,
+            "wavelet_hidden_states": wavelet_hidden_states,
             "time_attn_weights": time_attn_weights,
-            "group_attn_weights": group_attn_weights,
+            "wavelet_attn_weights": wavelet_attn_weights,
             "router_logits": router_logits
         }
 
@@ -873,17 +860,13 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
 
     def forward(
             self,
-
             time_seq: torch.FloatTensor = None,
             wavelet_seq: torch.FloatTensor = None,
-
             time_seq_embeds: torch.FloatTensor = None,
             wavelet_seq_embeds: torch.FloatTensor = None,
-
             loss_masks: Optional[torch.FloatTensor] = None,
             attention_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,    
-
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None
     ) -> Union[Tuple, WaveletMoeModelOutputWithPast]:
