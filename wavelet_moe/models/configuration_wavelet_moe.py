@@ -63,7 +63,7 @@ class WaveletMoeConfig(PretrainedConfig):
         if patch_size%2 != 0:
             raise ValueError(f"Patch size should be multiple of 2, not {patch_size}.")
         self.patch_size = patch_size
-        self.input_size = patch_size
+        self.token_len = patch_size
         
         if isinstance(horizon_lengths, int):
             horizon_lengths = [horizon_lengths]

@@ -15,7 +15,6 @@ from transformers.modeling_outputs import MoeModelOutputWithPast, MoeCausalLMOut
 from wavelet_moe.models.configuration_wavelet_moe import WaveletMoeConfig
 from wavelet_moe.models.wavelet_moe_output import WaveletMoeModelOutputWithPast, WaveletMoeCausalLMOutputWithPast
 from wavelet_moe.models.wavelet_generation_mixin import WaveletGenerationMixin
-from wavelet_moe.datasets.dwt_tokenizer import DWTTokenizer
 
 logger = logging.get_logger(__name__)
 
@@ -55,193 +54,6 @@ def _get_unpad_data(attention_mask):
         cu_seqlens,
         max_seqlen_in_batch,
     )
-
-
-# load balancing loss for MoE layers (shared expert are not included)
-def load_balancing_loss_func(
-        gate_logits: Union[torch.Tensor, Tuple[torch.Tensor], List[torch.Tensor]],
-        top_k: int,
-        num_experts: int = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        group_ids: Optional[torch.Tensor] = None
-) -> torch.Tensor:
-    r"""
-    Computes auxiliary load balancing loss as in Switch Transformer - implemented in Pytorch.
-
-    See Switch Transformer (https://arxiv.org/abs/2101.03961) for more details. This function implements the loss
-    function presented in equations (4) - (6) of the paper. It aims at penalizing cases where the routing between
-    experts is too unbalanced.
-
-    Args:
-        gate_logits: (Union[`torch.Tensor`, Tuple[torch.Tensor], List[torch.Tensor])
-            Logits from the `gate`, should be a tuple of `model.config.num_hidden_layers` tensors of
-            shape `[batch_size X sequence_length, num_experts]`.
-        top_k: (`int`)
-            Selected Top k over the experts.
-        num_experts (`int`, *optional*):
-            Number of experts
-        attention_mask: (`torch.Tensor`, None)
-            The attention_mask used in forward function
-            shape [batch_size X sequence_length] if not None.
-        group_ids: `(batch_size, )`
-
-    Returns:
-        The auxiliary loss.
-    """
-    if gate_logits is None or not isinstance(gate_logits, (tuple, list)) or gate_logits[0] is None:
-        return 0.0
-
-    # choose top-k experts, rated by softmax, get a expert_mask
-    compute_device = gate_logits[0].device
-
-    # concatenated_gate_logits: [num_hidden_layers * batch_size * seq_len, num_experts]
-    concatenated_gate_logits = torch.cat([layer_gate.to(compute_device) for layer_gate in gate_logits], dim=0)
-
-    # shape [num_hidden_layers * batch_size * seq_len, num_experts]
-    routing_weights = torch.nn.functional.softmax(concatenated_gate_logits, dim=-1)
-
-    # select topk & mask onehot
-    # shape [num_layers * batch * seq_len, topk, num_experts]
-    # expert_mask[i] indicate the experts that token i chosen
-    _, selected_experts = torch.topk(routing_weights, top_k, dim=-1)
-    expert_mask = torch.nn.functional.one_hot(selected_experts, num_experts)
-
-    # situation 1: all token are real
-    if attention_mask is None:
-        # Compute the percentage of tokens routed to each expert
-        tokens_per_expert = torch.mean(expert_mask.float(), dim=0)
-
-        # Compute the average probability of routing to these experts
-        router_prob_per_expert = torch.mean(routing_weights, dim=0)
-    
-    # situation 2:
-    else:
-        batch_size, sequence_length = attention_mask.shape
-
-        # concatenated_gate_logits: [num_hidden_layers * batch_size * seq_len, num_experts], dont forget
-        num_hidden_layers = concatenated_gate_logits.shape[0] // (batch_size * sequence_length)
-
-        # Compute the mask that masks all padding tokens as 0 with the same shape of expert_mask:
-        # 1. increase dim of attn_mask to [1, batch_size, seq_len, 1, 1]
-        # 2. expand shape of attn_mask to [num_hidden_layers, batch_size, sequence_length, top_k, num_experts]
-        # 3. flatten first 2 dim, reshape to [num_layers * batch_size * seq_len, top_k, num_experts], same shape of expert_mask
-        expert_attention_mask = (
-            attention_mask[None, :, :, None, None]
-            .expand((num_hidden_layers, batch_size, sequence_length, top_k, num_experts))
-            .reshape(-1, top_k, num_experts)
-            .to(compute_device)
-        )
-
-        # Compute the percentage of tokens routed to each experts
-        # 1. sum(expert_mask * expert_attn_mask): times an exact expert be selected through out all transformer blocks
-        # 2. sum(expert_attn_mask): how many times an expert be selected
-        # 3. divide, get percentage (ideal probability)
-        # shape [topk, num_experts]
-        tokens_per_expert = torch.sum(expert_mask.float() * expert_attention_mask, dim=0) / torch.sum(
-            expert_attention_mask, dim=0
-        )
-
-        # Compute the mask that masks all padding tokens as 0 with the same shape of tokens_per_expert
-        # shape: [num_layers * batch_size * seq_len, num_experts]
-        router_per_expert_attention_mask = (
-            attention_mask[None, :, :, None]
-            .expand((num_hidden_layers, batch_size, sequence_length, num_experts))
-            .reshape(-1, num_experts)
-            .to(compute_device)
-        )
-
-        # Compute the average probability of routing to these experts
-        # 1. sum(routing_weight * router_per_..._mask): sum all unpad token's routing weight
-        # 2. sum(router_per_..._mask): nums of unpad token
-        # 3. divide, get average probality (actual probability)
-        # shape [num_experts, ]
-        router_prob_per_expert = torch.sum(routing_weights * router_per_expert_attention_mask, dim=0) / torch.sum(
-            router_per_expert_attention_mask, dim=0
-        )
-
-    # overall_loss = sum(ideal_prob * actual_prob)
-    # in idealize situation, every expert get token with same prob, thus ideal_prob * actual_prob = 1/N^2
-    # then sum, overall_loss = 1/N, a float number
-    overall_loss = torch.sum(tokens_per_expert * router_prob_per_expert.unsqueeze(dim=0))
-
-    # finally, loss==1 in when idealize
-    return overall_loss * num_experts
-
-
-def channel_load_balancing_loss(
-    gate_logits: Union[torch.Tensor, Tuple[torch.Tensor], List[torch.Tensor]],
-    top_k: int,
-    num_experts: int = None,
-    attention_mask: Optional[torch.Tensor] = None,
-):
-    """
-    Compute load balanc loss along batch axis.
-
-    Args:
-        gate_logits: (Union[`torch.Tensor`, Tuple[torch.Tensor], List[torch.Tensor])
-            Logits from the `gate`, should be a tuple of `model.config.num_hidden_layers` tensors of
-            shape `[batch_size X sequence_length, num_experts]`.
-        top_k: (`int`)
-            Selected Top k over the experts.
-        num_experts (`int`, *optional*):
-            Number of experts
-        attention_mask: (`torch.Tensor`, None)
-            The attention_mask used in forward function
-            shape [batch_size, sequence_length] if not None.
-    """
-
-    num_layers = len(gate_logits)
-    batch_size, seq_len = attention_mask.shape
-    compute_device = gate_logits[0].device
-
-    # concatenated_gate_logits: [num_hidden_layers * batch_size * seq_len, num_experts]
-    concatenated_gate_logits = torch.cat([layer_gate.to(compute_device) for layer_gate in gate_logits], dim=0)
-    
-    # gate routing weights [num_hidden_layers * batch_size * seq_len, num_experts]
-    routing_weights = torch.nn.functional.softmax(concatenated_gate_logits, dim=-1)
-
-    # expert_mask shape [num_layers * batch * seq_len, topk, num_experts]
-    _, selected_experts = torch.topk(routing_weights, top_k, dim=-1)
-    expert_mask = torch.nn.functional.one_hot(selected_experts, num_experts).float()
-
-    # reshape
-    routing_weights = routing_weights.view(batch_size, num_layers * seq_len, num_experts)
-    expert_mask = expert_mask.view(batch_size, num_layers * seq_len, top_k, num_experts)
-
-    if attention_mask is None:
-        # shape [batch_size, num_experts]
-        tokens_per_expert = torch.mean(expert_mask.float().sum(dim=2), dim=1) / top_k
-
-        # shape [batch_size, num_experts]
-        router_prob_per_batch = torch.mean(routing_weights, dim=1)
-    
-    else:
-
-        # extend to [batch_size, num_layers, seq_len]
-        expert_attention_mask = attention_mask.unsqueeze(1).repeat(1, num_layers, 1)
-
-        # [batch_size, num_layers * seq_len]
-        expert_attention_mask = expert_attention_mask.view(batch_size, -1).float()
-
-        # [batch_size, 1]
-        num_valid_tokens_per_batch = torch.sum(expert_attention_mask, dim=1, keepdim=True)
-
-        # [batch_size, num_experts]
-        tokens_per_expert = torch.sum(
-            expert_mask.float().sum(dim=2)  * expert_attention_mask.unsqueeze(-1), 
-            dim=1
-        ) / (num_valid_tokens_per_batch * top_k)
-
-
-        # [batch_size, num_experts]
-        router_prob_per_batch = torch.sum(
-            routing_weights * expert_attention_mask.unsqueeze(-1), 
-            dim=1
-        ) / (num_valid_tokens_per_batch)
-
-    overall_loss = torch.sum(torch.mean(tokens_per_expert, dim=0) * torch.mean(router_prob_per_batch, dim=0))
-
-    return overall_loss * num_experts
 
 
 # Copied from transformers.models.llama.modeling_llama.repeat_kv
@@ -308,10 +120,10 @@ class WaveletMoeEmbedderBlock(torch.nn.Module):
     def __init__(self, config: WaveletMoeConfig):
         super().__init__()
         self.config = config
-        self.input_size = config.input_size
+        self.token_len = config.token_len
         self.hidden_size = config.hidden_size
-        self.emb_layer = nn.Linear(self.input_size, self.hidden_size, bias=False)
-        self.gate_layer = nn.Linear(self.input_size, self.hidden_size, bias=False)
+        self.emb_layer = nn.Linear(self.token_len, self.hidden_size, bias=False)
+        self.gate_layer = nn.Linear(self.token_len, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -512,6 +324,9 @@ class WaveletMoeSparseExpertsBlock(torch.nn.Module):
          hidden_states (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
          routed_experts_router_logits (`torch.FloatTensor`): shape `[batch_sz * token_num, routed_experts_num]`.
          shared_experts_router_logits (`torch.FloatTensor`): shape `[batch_sz * token_num, shared_experts_num]`, `shared_experts_num==1` by default.
+        
+        Returns:
+         final_hidden_states: (`torch.FloatTensor`), shape `[batch_sz, token_num, hidden_sz]`.
         """
 
         # Prepare data & routing
@@ -582,7 +397,7 @@ class WaveletMoeDualMoeLayer(torch.nn.Module):
     def forward(
         self,
         time_hidden_states: torch.FloatTensor,
-        wavelet_hidden_states: torch.FloatTensor,
+        wavelet_hidden_states: torch.FloatTensor
     ):
         """
         Args:
@@ -591,9 +406,9 @@ class WaveletMoeDualMoeLayer(torch.nn.Module):
         
         Returns:
          (time_hidden_states, wavelet_hidden_states, routed_experts_router_logits):
-         - time_hidden_states: (`torch.FloatTensor`), shape `[batch_sz, token_num, hidden_sz]`.
-         - wavelet_hidden_states: (`torch.FloatTensor`), shape `[batch_sz, token_num, hidden_sz]`.
-         - routed_experts_router_logits: (`torch.FloatTensor`), shape `[batch_sz * token_num, routed_experts_num]`.
+         - **time_hidden_states**: (`torch.FloatTensor`), shape `[batch_sz, token_num, hidden_sz]`.
+         - **wavelet_hidden_states**: (`torch.FloatTensor`), shape `[batch_sz, token_num, hidden_sz]`.
+         - **routed_experts_router_logits**: (`torch.FloatTensor`), shape `[batch_sz * token_num, routed_experts_num]`.
         """
 
         time_residual, wavelet_residual = time_hidden_states, wavelet_hidden_states
@@ -936,24 +751,6 @@ class WaveletMoeDecoderLayer(torch.nn.Module):
         - **router_logits**: `tuple(torch.FloatTensor)`, *optional*
         """
 
-        # if self.config.use_group_attn:
-        #     # Time Attention Layer
-        #     residual = hidden_states
-        #     hidden_states = self.before_attention_layernorm(hidden_states)
-        #     hidden_states, time_attn_weights = self.time_attn(
-        #         hidden_states=hidden_states,
-        #         attention_mask=time_attn_mask,
-        #         position_ids=position_ids,
-        #         output_attentions=output_attentions
-        #     )
-        #     hidden_states = residual + hidden_states
-        
-        # # Feed Forward Layer
-        # residual = hidden_states
-        # hidden_states = self.post_attention_layernorm(hidden_states)
-        # hidden_states, router_logits = self.ffn_layer(hidden_states)
-        # hidden_states = residual + hidden_states
-
         if time_hidden_states.shape != wavelet_hidden_states.shape:
             raise ValueError(f"time_hidden_states.shape [{time_hidden_states.shape}] should equal to wavelet_hidden_states.shape [{wavelet_hidden_states.shape}]!")
         if time_hidden_states.dtype != wavelet_hidden_states.dtype:
@@ -1220,39 +1017,62 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
         )
 
 
-class WaveletMoeOutputLayer(torch.nn.Module):
+class WaveletMoePredictionHead(torch.nn.Module):
     """
-    Prediction head: a MLP from [batch_size, seq_len, hidden_size] → [batch_size, token_num, horizon_length, token_len], 
-    mind that seq_len==token_num, input_size==token_len
+    Prediction head: a MLP from [batch_sz, token_num, hidden_sz] → [batch_sz, token_num, horizon_len, token_len]
     """
-    def __init__(self, hidden_size: int, horizon_length: int, input_size: int = 1):
+    def __init__(self, hidden_sz: int, horizon_len: int, token_len: int = 8):
         super().__init__()
-        self.horizon_length = horizon_length
-        self.input_size = input_size
-        self.out_layer = nn.Linear(
-            hidden_size,
-            input_size * horizon_length,    # multi-step prediction
-            bias=False,
-        )
+        self.horizon_len = horizon_len
+        self.token_len = token_len
+        self.out_layer = nn.Linear(hidden_sz, token_len * horizon_len, bias=False) # multi-step prediction
 
-    def forward(self, x):
+    def forward(self, hidden_states: torch.FloatTensor):
         """
-
         Args:
-            x (torch.FloatTensor): with shape [batch_size, token_num, hidden_size]
+         hidden_states (`torch.FloatTensor`): shape [batch_sz, token_num, hidden_sz]
 
         Returns:
-    `       torch.FloatTensor: final prediction with shape [batch_size, token_num, horizon_length, input_size]
+         prediction_outputs: (`torch.FloatTensor`), shape [batch_sz, token_num, horizon_len, token_len]
         """
 
-        batch_size, token_num, _ = x.shape
+        batch_sz, token_num, _ = hidden_states.shape
 
-        # [batch_size, token_num, hidden_size] → [batch_size, token_num, token_len * horizon_length]
-        out = self.out_layer(x)
+        # shape [batch_sz, token_num, horizon_len * token_len] -> [batch_sz, token_num, horizon_len, token_len]
+        prediction_outputs = self.out_layer(hidden_states)
+        prediction_outputs = prediction_outputs.view(batch_sz, token_num, self.horizon_len, self.token_len)
 
-        # shape -> [batch_size, token_num, horizon_length, token_len]
-        out = out.view(batch_size, token_num, self.horizon_length, self.input_size)
-        return out
+        return prediction_outputs
+
+
+class WaveletMoeDualOutputHead(torch.nn.Module):
+    """
+    Dual prediction head contains two `WaveletMoePredictionHead`
+    """
+    def __init__(self, hidden_sz: int, horizon_len: int, token_len: int = 8):
+        super().__init__()
+        self.time_predict_head = WaveletMoePredictionHead(hidden_sz, horizon_len, token_len)
+        self.wavelet_predict_head = WaveletMoePredictionHead(hidden_sz, horizon_len, token_len)
+    
+    def forward(
+        self,
+        time_hidden_states: torch.FloatTensor,
+        wavelet_hidden_states: torch.FloatTensor
+    ):
+        """
+        Args:
+         time_hidden_states (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+         wavelet_hidden_states (`torch.FloatTensor`): shape `[batch_sz, token_num, hidden_sz]`.
+        
+        Returns:
+         (time_predictions, wavelet_predictions):
+         - **time_hidden_states**: (`torch.FloatTensor`), shape `[batch_sz, token_num, horizon_len, token_len]`.
+         - **wavelet_hidden_states**: (`torch.FloatTensor`), shape `[batch_sz, token_num, horizon_len, token_len]`.
+        """
+        time_hidden_states = self.time_predict_head(time_hidden_states)
+        wavelet_hidden_states = self.wavelet_predict_head(wavelet_hidden_states)
+        return time_hidden_states, wavelet_hidden_states
+        
 
 
 # TODO: delete rebundent argments like output_attentions & return dict
@@ -1262,23 +1082,24 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         super().__init__(config)
         self.config = config
         self.num_experts_per_tok = config.num_experts_per_tok
+        self.apply_aux_loss = config.apply_aux_loss
         self.router_aux_loss_factor = config.router_aux_loss_factor
 
         self.model = WaveletMoeModel(config)
 
         # output layer
-        lm_head_list = []
+        dual_output_head_list = []
         self.horizon_length_map = {}
         for i, horizon_length in enumerate(config.horizon_lengths):
-            lm_head_list.append(
-                WaveletMoeOutputLayer(
-                    hidden_size=self.config.hidden_size,
-                    input_size=self.config.input_size,
-                    horizon_length=horizon_length,
+            dual_output_head_list.append(
+                WaveletMoeDualOutputHead(
+                    hidden_sz = self.config.hidden_size,
+                    horizon_len = horizon_length,
+                    token_len = self.config.token_len
                 )
             )
             self.horizon_length_map[horizon_length] = i
-        self.lm_heads = nn.ModuleList(lm_head_list)
+        self.dual_output_heads = nn.ModuleList(dual_output_head_list)
 
         # select loss function
         self.loss_function_name = config.loss_func
@@ -1288,14 +1109,6 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
             self.loss_function = torch.nn.MSELoss(reduction='none')
         else:
             raise ValueError(f"Unsupport loss function: {self.loss_function_name}")
-
-        # add dwt tokenizer to calculate loss
-        self.dwt_tokenizer = DWTTokenizer(
-                                 wavelet=self.config.wavelet_function, 
-                                 mode=self.config.wavelet_signal_extension_mode,
-                                 level=self.config.wavelet_dwt_level,
-                                 patch_size=self.config.patch_size,
-                                )
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1314,8 +1127,10 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
             time_seq_embeds: Optional[torch.FloatTensor] = None,
             wavelet_seq_embeds: Optional[torch.FloatTensor] = None,
 
+            time_seq_labels: Optional[torch.FloatTensor] = None,
+            wavelet_seq_labels: Optional[torch.FloatTensor] = None,
+
             loss_masks: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.FloatTensor] = None,
             attention_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
             max_horizon_length: Optional[int] = None,
@@ -1329,18 +1144,21 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
          wavelet_seq: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`.
          time_seq_embeds: `torch.FloatTensor`, shape `[batch_sz, token_num, hidden_sz]`.
          wavelet_seq_embeds: `torch.FloatTensor`, shape `[batch_sz, token_num, hidden_sz]`.
-         loss_masks: `torch.FloatTensor`, shape `[batch_sz, token_num]`.
+         time_seq_labels: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`, use in training.
+         wavelet_seq_labels: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`, use in training.
          labels: `torch.FloatTensor`, shape `[batch_sz, token_num, token_len]`, use in training.
+         loss_masks: `torch.FloatTensor`, shape `[batch_sz, token_num]`.
          attention_mask: `None` or `[batch_sz, token_num]`.
          position_ids: `None` or `[batch_sz, token_num]`.
          max_horizon_length: `None` or `int`, use in inferencing.
+        
+        Returns:
+         WaveletMoeCausalLMOutputWithPast: 
         """
 
         # output setting
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
+        output_hidden_states = output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
 
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
@@ -1357,48 +1175,41 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
             output_hidden_states=output_hidden_states,
         )
 
-        hidden_states = outputs[0]
-        predictions = None
-
-        loss = None
-        aux_loss = None
+        time_hidden_state, wavelet_hidden_state = outputs.last_time_hidden_state, outputs.last_wavelet_hidden_state
+        time_predictions, wavelet_predictions = None, None
+        loss, aux_loss = None, None
 
         # when training
-        if labels is not None:  
-            # AutoRegressive loss
-            ar_loss = 0.0
-            dwt_loss = 0.0
+        if time_seq_labels is not None:  
+            # auto regressive loss
+            ar_loss, time_ar_loss, wavelet_ar_loss = 0.0, 0.0, 0.0
 
-            for lm_head, horizon_length in zip(self.lm_heads, self.config.horizon_lengths):
-                one_predictions = lm_head(hidden_states)
+            for output_head, horizon_length in zip(self.dual_output_heads, self.config.horizon_lengths):
+                one_time_predictions, one_wavelet_predictions = output_head(time_hidden_state, wavelet_hidden_state)
 
-                # Mind this: 1. should modify loss func; 2. whats loss_mask
-                one_ar_loss = self.calc_ar_loss(one_predictions, labels, loss_masks, horizon_length)
-                ar_loss += one_ar_loss
-
-                one_dwt_loss = self.calc_dwt_loss(one_predictions)
-                dwt_loss += one_dwt_loss
+                one_time_ar_loss = self._calc_ar_loss(one_time_predictions, time_seq_labels, loss_masks, horizon_length)
+                one_wavelet_ar_loss = self._calc_ar_loss(one_wavelet_predictions, wavelet_seq_labels, loss_masks, horizon_length)
                 
-                if predictions is None:
-                    predictions = one_predictions
+                ar_loss += (one_time_ar_loss + one_wavelet_ar_loss)
+                
+                if time_predictions is None:
+                    time_predictions, wavelet_predictions = one_time_predictions, one_wavelet_predictions
 
-            loss = (ar_loss + dwt_loss) / len(self.config.horizon_lengths)
+            loss = ar_loss / len(self.config.horizon_lengths)
 
             if self.apply_aux_loss:
-                # len(router_logits)==num_layers, router_logits.shape==(batch_sz * token_num, expert_num)
                 router_logits = outputs.router_logits
 
-                temporal_aux_loss = self.calc_load_balancing_loss(
-                    router_logits,
-                    group_ids = group_ids,
-                    top_k=self.num_experts_per_tok,
-                    num_experts=self.config.num_experts,
-                    attention_mask=loss_masks,
-                    time_axis_loss_factor=self.config.time_axis_loss_factor
+                temporal_aux_loss = self._calc_load_balancing_loss(
+                    router_logits
+                    top_k = self.num_experts_per_tok,
+                    num_experts = self.config.num_experts,
+                    attention_mask = loss_masks
                 )
 
                 loss += self.router_aux_loss_factor * temporal_aux_loss.to(loss.device)
         
+        # TODO: inference modules for DualWaveletMoE
         # when inferencing
         else:   
             # scheduling for multi-resolution forecasting, ie Algo 1 in paper
@@ -1431,7 +1242,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         )
 
 
-    def calc_ar_loss(self, predictions, labels, loss_masks, horizon_len):
+    def _calc_ar_loss(self, predictions, labels, loss_masks, horizon_len):
         """
         Args:
          predictions: [B, token_num, horizon_len, token_len]
@@ -1457,7 +1268,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         new_labels = padded_labels.unfold(dimension=1, size=horizon_len, step=1).transpose(2,3)  
 
         # expand loss mask
-        loss_masks_padded = F.pad(loss_masks, (0, horizon_len - 1))  # [B, token_num + horizon_len - 1]
+        loss_masks_padded = nn.functional.pad(loss_masks, (0, horizon_len - 1))  # [B, token_num + horizon_len - 1]
         new_loss_masks = loss_masks_padded.unfold(dimension=1, size=horizon_len, step=1)  # [B, token_num, horizon_len]
         new_loss_masks = new_loss_masks.unsqueeze(-1).expand(-1, -1, -1, token_len)  # [B, token_num, horizon_len, token_len]
 
@@ -1477,34 +1288,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         return loss
 
 
-    def calc_dwt_loss(self, predictions):
-        """
-        Calculate the loss between prediction seq & dwt coeffs.
-        """
-
-        batch_size, token_num, horizon_len, token_len = predictions.shape
-
-        # flatten [B, token_num, horizon_len, token_len] -> [B*token_num, horizon_len*token_len]
-        # s.t. every row is a tokenized predict time series
-        flattened_preds = predictions.reshape(batch_size * token_num, horizon_len * token_len)
-            
-        pred_seqs, pred_coeffs = self.dwt_tokenizer.patch_wise_detokenize(flattened_preds)
-            
-        rec_seqs = self.dwt_tokenizer.waverec(pred_coeffs)
-
-        if isinstance(pred_seqs, np.ndarray):
-            pred_seqs = torch.from_numpy(pred_seqs).to(dtype=predictions.dtype, device=predictions.device)
-        if isinstance(rec_seqs, np.ndarray):
-            rec_seqs = torch.from_numpy(rec_seqs).to(dtype=predictions.dtype, device=predictions.device)
-
-        losses = self.loss_function(pred_seqs, rec_seqs)
-
-        loss = torch.mean(losses)
-
-        return loss
-
-
-    def cal_time_axis_load_balancing_loss(
+    def _cal_time_axis_load_balancing_loss(
             self,
             expert_mask: torch.Tensor,
             routing_weights: torch.Tensor,
@@ -1575,69 +1359,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         return overall_loss * num_experts
 
 
-    def cal_channel_axis_load_balancing_loss(
-            self,
-            expert_mask: torch.Tensor,
-            routing_weights: torch.Tensor,
-            attention_mask: torch.Tensor,
-            group_ids: torch.Tensor,
-            top_k: int,
-            num_layers: int,
-            batch_size: int,
-            seq_len: int,
-            num_experts: int,
-            device: torch.device
-    ) -> torch.Tensor:
-        """
-        Computes load balancing loss along channel axis.
-
-        Args:
-        expert_mask: (`torch.Tensor`) shape `[num_layers * batch * seq_len, topk, num_experts]`
-        routing_weights: (`torch.Tensor`) shape `[num_layers * batch_size * seq_len, num_experts]`
-        attention_mask: (`torch.Tensor`) shape `[batch_size, seq_length]`
-        group_ids: (`torch.Tensor`)
-        top_k: `int`
-        num_layers: `int`
-        batch_size: `int`
-        seq_len: `int`
-        num_experts: `int`
-        device: `torch.device`
-        
-        Returns:
-        channel_axis_load_balacing_loss: `torch.Tensor`
-        """
-
-        # reshape
-        routing_weights = routing_weights.view(batch_size, num_layers * seq_len, num_experts)
-        expert_mask = expert_mask.view(batch_size, num_layers * seq_len, top_k, num_experts)
-
-        # extend to [batch_size, num_layers, seq_len]
-        expert_attention_mask = attention_mask.unsqueeze(1).repeat(1, num_layers, 1)
-
-        # [batch_size, num_layers * seq_len]
-        expert_attention_mask = expert_attention_mask.view(batch_size, -1).float().to(device)
-
-        # [batch_size, 1]
-        num_valid_tokens_per_batch = torch.sum(expert_attention_mask, dim=1, keepdim=True)
-
-        # [batch_size, num_experts]
-        tokens_per_expert = torch.sum(
-            expert_mask.float().sum(dim=2)  * expert_attention_mask.unsqueeze(-1), 
-            dim=1
-        ) / (num_valid_tokens_per_batch * top_k)
-
-        # [batch_size, num_experts]
-        router_prob_per_batch = torch.sum(
-            routing_weights * expert_attention_mask.unsqueeze(-1), 
-            dim=1
-        ) / (num_valid_tokens_per_batch)
-
-        overall_loss = torch.sum(torch.mean(tokens_per_expert, dim=0) * torch.mean(router_prob_per_batch, dim=0))
-
-        return overall_loss * num_experts
-
-
-    def calc_load_balancing_loss(
+    def _calc_load_balancing_loss(
             self,
             gate_logits: Union[torch.Tensor, Tuple[torch.Tensor], List[torch.Tensor]],
             group_ids: torch.Tensor,
@@ -1683,7 +1405,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         _, selected_experts = torch.topk(routing_weights, top_k, dim=-1)
         expert_mask = torch.nn.functional.one_hot(selected_experts, num_experts).float()
 
-        time_axis_loss = self.cal_time_axis_load_balancing_loss(
+        load_balancing_loss = self._cal_time_axis_load_balancing_loss(
             expert_mask = expert_mask,
             routing_weights = routing_weights,
             attention_mask = attention_mask,
@@ -1694,26 +1416,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
             num_experts = num_experts,
             device = compute_device
         )
-
-        if self.config.use_channel_axis_loss == True:
-            channel_axis_loss = self.cal_channel_axis_load_balancing_loss(
-                expert_mask = expert_mask,
-                routing_weights = routing_weights,
-                attention_mask = attention_mask,
-                group_ids = group_ids,
-                top_k = top_k,
-                num_layers = num_layers,
-                batch_size = batch_size,
-                seq_len = seq_len,
-                num_experts = num_experts,
-                device = compute_device
-            )
-
-            load_balancing_loss = time_axis_loss_factor * time_axis_loss + (1-time_axis_loss_factor) * channel_axis_loss
-        else:
-            load_balancing_loss = time_axis_loss
         
-
         return load_balancing_loss
 
 
