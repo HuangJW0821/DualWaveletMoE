@@ -141,9 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="adam beta1")
     parser.add_argument("--adam_beta2", type=float, default=0.95, help="adam beta2")
     parser.add_argument("--adam_epsilon", type=float, default=1e-8, help="adam epsilon")
-    parser.add_argument(
-        "--max_grad_norm", type=float, default=1.0, help="max gradient norm"
-    )
+    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="max gradient norm")
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,

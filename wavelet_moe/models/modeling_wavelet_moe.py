@@ -2,6 +2,7 @@ import os
 import warnings
 import math
 from typing import Optional, Tuple, List, Union
+from tqdm import tqdm
 
 import numpy as np
 import torch
@@ -1199,7 +1200,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
                     time_predictions, wavelet_predictions = one_time_predictions, one_wavelet_predictions
 
             output_head_num = len(self.config.horizon_lengths)
-            time_ar_loss, wavelet_ar_loss = time_ar_loss/output_head_num, wavelet_ar_loss/output_head_num
+            time_ar_loss, wavelet_ar_loss = time_ar_loss / output_head_num, wavelet_ar_loss / output_head_num
             ar_loss = time_ar_loss + wavelet_ar_loss
             loss = ar_loss.clone()
 
@@ -1215,6 +1216,8 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
 
                 loss += self.load_balance_loss_factor * load_balance_loss.to(loss.device)
         
+            # tqdm.write(f"Loss: [{loss.item()}], AR_Loss: [{ar_loss.item()}], Load_Balance_Loss: [{loss.item()}], Time_AR_Loss: [{time_ar_loss.item()}], Wavelet_AR_Loss: [{wavelet_ar_loss.item()}], Load_Balance_Loss: [{load_balance_loss.item()}]")
+
         # TODO: inference modules for DualWaveletMoE
         # when inferencing
         else:   

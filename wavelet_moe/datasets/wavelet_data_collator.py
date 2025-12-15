@@ -13,22 +13,15 @@ from functools import lru_cache
 from datasets.utils.logging import disable_progress_bar
 disable_progress_bar()
 
-def zero_scaler(seq: torch.Tensor):
-    mean_val = seq.mean()
-    std_val = seq.std()
-    if std_val == 0:
-        normed_seq = seq - mean_val
-    else:
-        normed_seq = (seq - mean_val) / std_val
-    return normed_seq
+def zero_scaler(batch: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    mean = batch.mean(dim=1, keepdim=True)
+    std = batch.std(dim=1, keepdim=True, unbiased=False)
+    return (batch - mean) / (std + eps)
 
-def max_scaler(seq: torch.Tensor):
-    max_val = torch.abs(seq).max()
-    if max_val == 0:
-        normed_seq = seq
-    else:
-        normed_seq = seq / max_val
-    return normed_seq
+def max_scaler(seq: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    max_val = torch.abs(seq).amax()
+    return seq / (max_val + eps)
+
 
 class WaveletTimeSeriesDataCollator(DataCollatorMixin):
     """
@@ -88,7 +81,6 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
     def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         # collect batch
         batch_data = torch.tensor([])
-        batch_group_ids = torch.tensor([])
         batch_loss_masks = torch.tensor([])
 
         for feature in features:
@@ -98,7 +90,6 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
             if len(loss_mask.shape)==1:
                 loss_mask = loss_mask.unsqueeze(0)
             batch_loss_masks = torch.cat([batch_loss_masks, loss_mask], dim=0)
-
 
         # process batch data: scaling & wavelet dwt tokenize
         # shape: (batch_size, seq_len) -> (batch_size, seq_len*2)
@@ -136,9 +127,9 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         wavelet_seq_labels = batch_labels[:,:, self.patch_size:]
 
         return {
-            'time_seq': time_seq,           # shape: (batch_size, token_num, patch_sz)
-            'wavelet_seq': wavelet_seq,     # shape: (batch_size, token_num, patch_sz)
-            'time_seq_labels': time_seq_labels,     # shape: (batch_size, token_num, patch_sz)
-            'wavelet_seq_labels': wavelet_seq_labels,     # shape: (batch_size, token_num, patch_sz)
-            'loss_masks': batch_loss_masks  # shape: (batch_size, token_num)
+            'time_seq': time_seq,                           # shape: (batch_size, token_num, patch_sz)
+            'wavelet_seq': wavelet_seq,                     # shape: (batch_size, token_num, patch_sz)
+            'time_seq_labels': time_seq_labels,             # shape: (batch_size, token_num, patch_sz)
+            'wavelet_seq_labels': wavelet_seq_labels,       # shape: (batch_size, token_num, patch_sz)
+            'loss_masks': batch_loss_masks                  # shape: (batch_size, token_num)
         }
