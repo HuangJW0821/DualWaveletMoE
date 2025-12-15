@@ -5,8 +5,6 @@ from transformers import AutoModelForCausalLM
 import numpy as np
 import pandas as pd
 
-from chronos import Chronos2Pipeline, ChronosPipeline
-
 from wavelet_moe.models.modeling_wavelet_moe import WaveletMoeForPrediction
 
 class ModelForEvaluation:
@@ -146,6 +144,7 @@ class Chronos2ForEvaluation(ModelForEvaluation):
             prediction_length: int,
             patch_size: int = 8
         ):
+        from chronos import Chronos2Pipeline
 
         super().__init__(model_path, input_length, prediction_length, patch_size)
         
@@ -389,6 +388,8 @@ class ChronosForEvaluation(ModelForEvaluation):
             prediction_length: int,
             patch_size: int = 8
     ):
+        from chronos import ChronosPipeline
+
         super().__init__(model_path, input_length, prediction_length, patch_size)
 
         model = ChronosPipeline.from_pretrained(
