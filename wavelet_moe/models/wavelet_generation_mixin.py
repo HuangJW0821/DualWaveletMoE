@@ -8,7 +8,8 @@ from transformers.generation import validate_stopping_criteria, EosTokenCriteria
 from transformers.generation.utils import GenerateNonBeamOutput, GenerateEncoderDecoderOutput, GenerateDecoderOnlyOutput
 from transformers.utils import ModelOutput
 
-# TODO: Apdation for group attention
+
+# TODO: Adpation for dual structure
 class WaveletGenerationMixin(GenerationMixin):
 
     def _greedy_search(

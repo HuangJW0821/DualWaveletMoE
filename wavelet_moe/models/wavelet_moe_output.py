@@ -62,39 +62,62 @@ class WaveletMoeCausalLMOutputWithPast(ModelOutput):
     Args:
         loss: (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided)
             Language modeling loss (for next-token prediction).
-
-        logits: (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`)
-            Prediction scores of the language modeling head (scores for each vocabulary token before SoftMax).
-
-        aux_loss: (`torch.FloatTensor`, *optional*, returned when `labels` is provided)
-            aux_loss for the sparse modules.
-
-        router_logits: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_router_probs=True` and `config.add_router_probs=True` is passed or when `config.output_router_probs=True`)
-            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, sequence_length, num_experts)`.
-
-            Raw router logtis (post-softmax) that are computed by MoE routers, these terms are used to compute the auxiliary
-            loss for Mixture of Experts models.
         
-        hidden_states: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`)
+        ar_loss: (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided)
+            Auto-regression loss, sum of `time_ar_loss` and `wavelet_ar_loss`
+
+        time_ar_loss: (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided)
+            Auto-regression loss of time-series sequences.
+        
+        wavelet_ar_loss: (`torch.FloatTensor` of shape `(1,)`, *optional*, returned when `labels` is provided)
+            Auto-regression loss of wavelet coeffient sequences.
+
+        time_predictions: (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`)
+            Prediction scores of the language modeling head of time modality (scores for each vocabulary token before SoftMax).
+        
+        wavelet_predictions: (`torch.FloatTensor` of shape `(batch_size, sequence_length, config.vocab_size)`)
+            Prediction scores of the language modeling head of wavelet modality (scores for each vocabulary token before SoftMax).
+
+        load_balance_loss: (`torch.FloatTensor`, *optional*, returned when `labels` is provided)
+            Router load balance loss for the MoE modules.
+        
+        all_time_hidden_states: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`)
             Tuple of `torch.FloatTensor` (one for the output of the embeddings, if the model has an embedding layer, +
             one for the output of each layer) of shape `(batch_size, sequence_length, hidden_size)`.
 
             Hidden-states of the model at the output of each layer plus the optional initial embedding outputs.
         
-        time_attentions: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`)
+        all_wavelet_hidden_states: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_hidden_states=True` is passed or when `config.output_hidden_states=True`)
+        
+        all_time_self_attns: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`)
             Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, num_heads, sequence_length,
             sequence_length)`.
 
             Attentions weights after the attention softmax, used to compute the weighted average in the self-attention
             heads.
         
-        gruop_attentions: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`)
+        all_wavelet_self_attns: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_attentions=True` is passed or when `config.output_attentions=True`)
+    
+        router_logits: (`tuple(torch.FloatTensor)`, *optional*, returned when `output_router_probs=True` and `config.add_router_probs=True` is passed or when `config.output_router_probs=True`)
+            Tuple of `torch.FloatTensor` (one for each layer) of shape `(batch_size, sequence_length, num_experts)`.
+
+            Raw router logtis (post-softmax) that are computed by MoE routers, these terms are used to compute the auxiliary
+            loss for Mixture of Experts models.
     """
 
     loss: Optional[torch.FloatTensor] = None
-    aux_loss: Optional[torch.FloatTensor] = None
-    logits: torch.FloatTensor = None
-    hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
-    time_attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
-    gruop_attentions: Optional[Tuple[torch.FloatTensor, ...]] = None
-    router_logits: Optional[Tuple[torch.FloatTensor]] = None
+    ar_loss: Optional[torch.FloatTensor] = None
+    time_ar_loss: Optional[torch.FloatTensor] = None
+    wavelet_ar_loss: Optional[torch.FloatTensor] = None
+    load_balance_loss: Optional[torch.FloatTensor] = None
+
+    time_predictions: torch.FloatTensor = None
+    wavelet_predictions: torch.FloatTensor = None
+
+    all_time_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+    all_wavelet_hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
+
+    all_time_self_attns: Optional[Tuple[torch.FloatTensor, ...]] = None
+    all_wavelet_self_attns: Optional[Tuple[torch.FloatTensor]] = None
+
+    all_router_logits: Optional[Tuple[torch.FloatTensor]] = None
