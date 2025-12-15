@@ -6,7 +6,8 @@ from operator import mul
 
 import torch
 
-from wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesSingleDataset, TimeSeriesMultipleDataset
+# from DualWaveletMoE.wavelet_moe.datasets._wavelet_moe_dataset import TimeSeriesSingleDataset, TimeSeriesMultipleDataset
+from wavelet_moe.datasets.wavelet_moe_dataset import WaveletMoeMultipleDataset, WaveletMoeWindowDataset, WaveletMoeWindowTensorDataset
 from wavelet_moe.datasets.wavelet_data_collator import WaveletTimeSeriesDataCollator
 from wavelet_moe.models.modeling_wavelet_moe import WaveletMoeForPrediction, WaveletMoeConfig
 from wavelet_moe.trainer.hf_trainer import WaveletMoETrainingArguments, WaveletMoeTrainer
@@ -111,8 +112,6 @@ class WaveletMoeRunner:
         log_in_local_rank_0(f'Set normalization to {train_config["normalization_method"]}')
 
         # set training arguments
-        # class WaveletMoETrainingArguments is herit from transformers.TrainingArguments
-        # only added a component min_learning_rate
         training_args = WaveletMoETrainingArguments(
             output_dir=self.output_path,
             num_train_epochs=num_train_epochs,
@@ -187,7 +186,9 @@ class WaveletMoeRunner:
 
         # Training
         # load dataset & data collator
-        dataset = TimeSeriesMultipleDataset(root_path = train_config["data_path"])
+        # dataset = TimeSeriesMultipleDataset(root_path = train_config["data_path"])
+        train_dataset, val_dataset = self._prepare_dataset(train_config)
+
         data_collator = WaveletTimeSeriesDataCollator(
             batch_size = micro_batch_size,
             patch_size = train_config["patch_size"],
@@ -201,7 +202,7 @@ class WaveletMoeRunner:
         trainer = WaveletMoeTrainer(
             model = model,
             args = training_args,
-            train_dataset = dataset,
+            train_dataset = train_dataset,
             data_collator= data_collator,
             needed_column_names = ["data", "loss_mask"]
         )
@@ -210,6 +211,64 @@ class WaveletMoeRunner:
         log_in_local_rank_0(f'Saving model to {self.output_path}')
 
         return trainer.model
+    
+
+    def _prepare_dataset(self, config):
+        data_path = config["data_path"]
+
+        context_length = int(config.get("context_length", config["max_length"]))
+        prediction_length = int(config.get("prediction_length", 0))
+        window_size = context_length + prediction_length
+        print("Window size:", window_size)
+
+        stride = window_size
+
+        lazy = bool(config.get("lazy_window", False))
+        cache_dir = config.get("dataset_cache_path", None)
+        use_cache = bool(config.get("use_dataset_cache", True))
+
+        base_ds = WaveletMoeMultipleDataset(
+            data_folder=data_path,
+            normalization_method=None,
+            cache_dir=cache_dir,
+            use_cache=use_cache,
+        )
+
+        window_ds = WaveletMoeWindowDataset(
+            dataset=base_ds,
+            context_length=context_length,
+            prediction_length=prediction_length,
+            stride=stride,
+            lazy=False,
+            cache_dir=cache_dir,
+            use_cache=use_cache,
+        )
+
+        train_ds = WaveletMoeWindowTensorDataset(
+            window_dataset=window_ds,
+            split= "train",
+            test_size=float(config.get("test_size", 0.0)),
+            seed=config.get("data_seed", self.seed),
+        )
+
+        # val_ds = WaveletMoeWindowTensorDataset(
+        #     window_dataset=window_ds,
+        #     split= "test",
+        #     test_size=float(config.get("test_size", 0.0)),
+        #     seed=config.get("data_seed", self.seed),
+        # )
+        val_ds = None
+
+
+        # 为均衡采样器暴露子数据集/窗口信息（从 TimeMoEWindowDataset 透传）
+        if hasattr(window_ds, "window_list"):
+            train_ds.window_list = window_ds.window_list
+        if hasattr(window_ds, "num_subsets"):
+            train_ds.num_subsets = window_ds.num_subsets
+        if hasattr(window_ds, "subset_names"):
+            train_ds.subset_names = window_ds.subset_names
+
+        return train_ds, val_ds
 
 
 def setup_seed(seed: int = 9899):

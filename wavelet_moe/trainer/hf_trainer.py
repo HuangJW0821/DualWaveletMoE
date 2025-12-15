@@ -10,7 +10,6 @@ import torch
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import get_scheduler
 
-# Copied from time_moe.trainer.hf_trainer with TimeMoe -> WaveletMoe
 
 class WaveletMoeTrainer(transformers.Trainer):
     epsilon = 1e-8

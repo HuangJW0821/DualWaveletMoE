@@ -10,21 +10,21 @@ if __name__ == "__main__":
         "--data_path",
         "-d",
         type=str,
-        default="/data/home/dataset/wavelet_moe_multivariate/train_synthetic",
+        default="/data/home/dataset/time300B",
         help="Path to training data. (Folder contains data files, or data file)",
     )
     parser.add_argument(
         "--model_path",
         "-m",
         type=str,
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/WaveletMoE_multivariate/configs/uni_50M_syn_from_scratch/config.json",
+        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/configs/dual_test/config.json",
         help="Path to pretrained model. Default: ./wavelet_moe/configs/config.json",
     )
     parser.add_argument(
         "--output_path", 
         "-o", 
         type=str, 
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/WaveletMoE_multivariate/logs/uni_50M_syn_from_scratch"
+        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/dual_test"
     )
     parser.add_argument(
         "--max_length",
@@ -98,12 +98,12 @@ if __name__ == "__main__":
         "--deepspeed", type=str, default=None, help="DeepSpeed config file path"
     )
 
-    parser.add_argument(
-        "--from_scratch", action="store_true", help="train from scratch"
-    )
     # parser.add_argument(
-    #     "--from_scratch", default="true", help="train from scratch"
+    #     "--from_scratch", action="store_true", help="train from scratch"
     # )
+    parser.add_argument(
+        "--from_scratch", default=True, help="train from scratch"
+    )
     parser.add_argument(
         "--save_steps", type=int, default=1000, help="number of steps to save model"
     )
