@@ -10,7 +10,7 @@ if __name__ == "__main__":
         "--data_path",
         "-d",
         type=str,
-        default="/data/home/dataset/chronos_processed/weatherbench_hourly_2m_temperature_processed",
+        default="/data/home/dataset",
         help="Path to training data. (Folder contains data files, or data file)",
     )
     parser.add_argument(
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--train_steps", type=int, default=10, help="number of training steps"
+        "--train_steps", type=int, default=100000, help="number of training steps"
     )
     parser.add_argument(
         "--num_train_epochs", type=float, default=1.0, help="number of training epochs"
@@ -105,7 +105,7 @@ if __name__ == "__main__":
         "--from_scratch", default=True, help="train from scratch"
     )
     parser.add_argument(
-        "--save_steps", type=int, default=1000, help="number of steps to save model"
+        "--save_steps", type=int, default=5000, help="number of steps to save model"
     )
     parser.add_argument(
         "--save_strategy",
@@ -125,7 +125,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--logging_steps", type=int, default=2, help="number of steps to log"
+        "--logging_steps", type=int, default=100, help="number of steps to log"
     )
     parser.add_argument(
         "--evaluation_strategy",
@@ -165,7 +165,7 @@ if __name__ == "__main__":
     if args.normalization_method == "none":
         args.normalization_method = None
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
     runner = WaveletMoeRunner(
         model_path=args.model_path,

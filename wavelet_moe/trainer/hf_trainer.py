@@ -9,6 +9,8 @@ import transformers
 import torch
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import get_scheduler
+import torch.nn as nn
+from typing import Dict, Union, Any
 
 
 class WaveletMoeTrainer(transformers.Trainer):

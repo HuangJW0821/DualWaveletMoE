@@ -14,7 +14,6 @@ from wavelet_moe.trainer.hf_trainer import WaveletMoETrainingArguments, WaveletM
 from wavelet_moe.utils.dist_util import get_world_size
 from wavelet_moe.utils.log_util import logger, log_in_local_rank_0
 
-
 class WaveletMoeRunner:
     def __init__(
             self,
@@ -187,8 +186,8 @@ class WaveletMoeRunner:
         # Training
         # load dataset & data collator
         # dataset = TimeSeriesMultipleDataset(root_path = train_config["data_path"])
-        # train_dataset, val_dataset = self._prepare_chronos_dataset(train_config)
-        train_dataset, val_dataset = self._prepare_single_dataset(train_config)
+        train_dataset, val_dataset = self._prepare_chronos_dataset(train_config)
+        # train_dataset, val_dataset = self._prepare_single_dataset(train_config)
 
         data_collator = WaveletTimeSeriesDataCollator(
             batch_size = micro_batch_size,
@@ -205,7 +204,7 @@ class WaveletMoeRunner:
             args = training_args,
             train_dataset = train_dataset,
             data_collator= data_collator,
-            needed_column_names = ["data", "loss_mask"]
+            needed_column_names = ["data", "loss_mask"],
         )
         trainer.train()
         trainer.save_model()
