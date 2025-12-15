@@ -245,6 +245,7 @@ class WaveletMoeDualRouter(torch.nn.Module):
     """
 
     def __init__(self, config: WaveletMoeConfig):
+        super().__init__()
         self.hidden_size = config.hidden_size
         self.before_routing_norm = WaveletMoeRMSNorm(config.hidden_size * 2, eps = config.rms_norm_eps)
         self.routed_experts_gate = torch.nn.Linear(config.hidden_size * 2, config.num_experts, bias=False)
@@ -276,7 +277,7 @@ class WaveletMoeDualRouter(torch.nn.Module):
         # normalize between time & wavelet modality
         concat_hidden_states = self.before_routing_norm(concat_hidden_states)
 
-        # routing for routed experts, shape [batch_sz * token_num, hidden_sz * 2]
+        # routing for routed experts, shape [batch_sz * token_num, routed_experts_num]
         routed_experts_router_logits = self.routed_experts_gate(concat_hidden_states)
 
         # routing for shared experts, shape `[batch_sz * token_num, shared_experts_num]`, `shared_experts_num==1` by default.
@@ -570,13 +571,13 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
         # shape [batch_sz, num_heads, q_len, kv_len]
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-        if attn_weights.size() != (bsz, 1, q_len, kv_seq_len):
-            raise ValueError(f"Self attention weights should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attn_weights.size()}")
+        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+            raise ValueError(f"Self attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is {attn_weights.size()}")
 
         # masking attention weights with attn_mask
         if causal_attn_mask is not None:
 
-            if causal_attn_mask.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+            if causal_attn_mask.size() != (bsz, 1, q_len, kv_seq_len):
                 raise ValueError(f"Time Attention mask should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is {causal_attn_mask.size()}")
             
             if self.config.use_topk_kv:
@@ -768,6 +769,7 @@ class WaveletMoeDecoderLayer(torch.nn.Module):
             output_attentions
         )
 
+        # FFN Layer (Dual MoE Layer)
         time_hidden_states, wavelet_hidden_states, router_logits = self.ffn_layer(time_hidden_states, wavelet_hidden_states)
 
         # output settings
@@ -909,7 +911,7 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
         if time_seq is not None and time_seq_embeds is not None:
             raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
         elif time_seq is not None and wavelet_seq is not None:
-            if time_seq.device != wavelet_seq.devices:
+            if time_seq.device != wavelet_seq.device:
                 wavelet_seq.to(time_seq.device)
             batch_size, token_num, _ = time_seq.shape
         elif time_seq_embeds is not None and wavelet_seq_embeds is not None:
@@ -1199,7 +1201,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
             output_head_num = len(self.config.horizon_lengths)
             time_ar_loss, wavelet_ar_loss = time_ar_loss/output_head_num, wavelet_ar_loss/output_head_num
             ar_loss = time_ar_loss + wavelet_ar_loss
-            loss = ar_loss
+            loss = ar_loss.clone()
 
             if self.use_load_balance_loss:
                 router_logits = outputs.all_router_logits
@@ -1243,9 +1245,9 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
             wavelet_ar_loss = wavelet_ar_loss,
             load_balance_loss = load_balance_loss,
             time_predictions = time_predictions,
-            wavelet_predictions = wavelet_predictions            
+            wavelet_predictions = wavelet_predictions,    
             all_time_hidden_states = outputs.all_time_hidden_states,
-            all_wavelet_hidden_states = outputs.all_wavelet_hidden_states
+            all_wavelet_hidden_states = outputs.all_wavelet_hidden_states,
             all_time_self_attns = outputs.all_time_self_attns,
             all_wavelet_self_attns = outputs.all_wavelet_self_attns,
             all_router_logits = outputs.all_router_logits
@@ -1271,7 +1273,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
 
         # pad horizon_len-1 zero in dim of token_num, make sure windowing wont out of idx.
         # shape: [B, token_num, token_len] -> [B, token_num + horizon_len -1, token_len]
-        padded_labels = F.pad(labels, (0, 0, 0, horizon_len - 1), mode='constant', value=0)  
+        padded_labels = torch.nn.functional.pad(labels, (0, 0, 0, horizon_len - 1), mode='constant', value=0)  
 
         # collect labels for every tokens & every horizon step
         # shape -> [B, token_num, horizon_len, token_len]

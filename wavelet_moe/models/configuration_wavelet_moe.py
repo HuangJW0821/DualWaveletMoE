@@ -32,8 +32,8 @@ class WaveletMoeConfig(PretrainedConfig):
             wavelet_signal_extension_mode: str = "periodization",
             wavelet_dwt_level: int = 2,
             loss_func: str = "huber",
-            use_topk_kv: bool = True,
-            topk_kv: int = None,
+            # use_topk_kv: bool = True,
+            # topk_kv: int = None,
             **kwargs,
     ):  
         self.hidden_size = hidden_size
@@ -74,10 +74,10 @@ class WaveletMoeConfig(PretrainedConfig):
         self.wavelet_dwt_level = wavelet_dwt_level
         self.loss_func = loss_func
 
-        self.use_topk_kv = use_topk_kv
-        self.topk_kv = topk_kv
-        if use_topk_kv and topk_kv is None:
-            raise ValueError(f"topk_kv should not be None if filter MHA is used.")
+        # self.use_topk_kv = use_topk_kv
+        # self.topk_kv = topk_kv
+        # if use_topk_kv and topk_kv is None:
+        #     raise ValueError(f"topk_kv should not be None if filter MHA is used.")
 
         kwargs.pop('tie_word_embeddings', None)
         super().__init__(

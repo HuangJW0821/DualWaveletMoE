@@ -46,7 +46,6 @@ class WaveletMoeTrainer(transformers.Trainer):
             # Inspect model forward signature to keep only the arguments it accepts.
             signature = inspect.signature(self.model.forward)
             params = list(signature.parameters.keys())
-            # Labels may be named label or label_ids, the default data collator handles that.
             self._signature_columns = list(set(
                 params + self.needed_column_names
             ))

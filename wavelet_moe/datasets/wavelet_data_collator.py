@@ -90,39 +90,15 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         batch_data = torch.tensor([])
         batch_group_ids = torch.tensor([])
         batch_loss_masks = torch.tensor([])
-        
-        current_batch_size = 0
-        current_group_id = 0
 
         for feature in features:
-            # process group data
-            group_data = feature['data']                    # shape: (group_size, seq_len)
-            group_size, seq_len = group_data.shape
+            batch_data = torch.cat([batch_data, feature['data']], dim=0)
 
-            loss_mask = feature['loss_mask'].unsqueeze(0)   # shape: (1, seq_len)
+            loss_mask = feature['loss_mask']
+            if len(loss_mask.shape)==1:
+                loss_mask = loss_mask.unsqueeze(0)
+            batch_loss_masks = torch.cat([batch_loss_masks, loss_mask], dim=0)
 
-            # group size (number of variates) differ across subsets.
-            # if reamaining space is 0, drop unprocessed group, so group_num groups are collected in batch finally.
-            remaining = self.batch_size - current_batch_size
-            if remaining <= 0:
-                break
-            
-            # when testing, if contains more than one groups, drop the last incomplete group,
-            # assure that every group in batch is complete
-            if self.mode == "TEST" and current_batch_size > 0 and remaining < group_size:
-                break
-
-            current_group_size = min(remaining, group_size)
-            # print(batch_data.shape, group_data.shape, current_group_size, feature['loss_mask'].shape)
-            batch_data = torch.cat([batch_data, group_data[:current_group_size]], dim=0)
-            batch_group_ids = torch.cat([batch_group_ids, torch.full(size = (current_group_size, ), fill_value = current_group_id)], dim=0)
-            
-            current_batch_size += current_group_size
-            current_group_id += 1
-
-            # process loss_mask
-            group_loss_mask = loss_mask.repeat(current_group_size, 1)
-            batch_loss_masks = torch.cat([batch_loss_masks, group_loss_mask], dim=0)
 
         # process batch data: scaling & wavelet dwt tokenize
         # shape: (batch_size, seq_len) -> (batch_size, seq_len*2)
@@ -152,9 +128,17 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         # shape: (batch_size, token_num, patch_size) -> (batch_size, token_num)
         batch_loss_masks = (batch_loss_masks != 0).any(dim=-1).long()
 
+        # silcng to adapt new dual structure
+        time_seq = batch_data[:,:, :self.patch_size]
+        wavelet_seq = batch_data[:,:, self.patch_size:]
+
+        time_seq_labels = batch_labels[:,:, :self.patch_size]
+        wavelet_seq_labels = batch_labels[:,:, self.patch_size:]
+
         return {
-            'input_ids': batch_data,        # shape: (batch_size, token_num, token_len)
-            'labels': batch_labels,         # shape: (batch_size, token_num, token_len)
-            'group_ids': batch_group_ids,   # shape: (batch_size, )
+            'time_seq': time_seq,           # shape: (batch_size, token_num, patch_sz)
+            'wavelet_seq': wavelet_seq,     # shape: (batch_size, token_num, patch_sz)
+            'time_seq_labels': time_seq_labels,     # shape: (batch_size, token_num, patch_sz)
+            'wavelet_seq_labels': wavelet_seq_labels,     # shape: (batch_size, token_num, patch_sz)
             'loss_masks': batch_loss_masks  # shape: (batch_size, token_num)
         }

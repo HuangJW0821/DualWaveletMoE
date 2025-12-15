@@ -10,7 +10,7 @@ if __name__ == "__main__":
         "--data_path",
         "-d",
         type=str,
-        default="/data/home/dataset/time300B",
+        default="/data/home/dataset/chronos_processed/weatherbench_hourly_2m_temperature_processed",
         help="Path to training data. (Folder contains data files, or data file)",
     )
     parser.add_argument(
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--train_steps", type=int, default=100000, help="number of training steps"
+        "--train_steps", type=int, default=10, help="number of training steps"
     )
     parser.add_argument(
         "--num_train_epochs", type=float, default=1.0, help="number of training epochs"
@@ -125,7 +125,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--logging_steps", type=int, default=100, help="number of steps to log"
+        "--logging_steps", type=int, default=2, help="number of steps to log"
     )
     parser.add_argument(
         "--evaluation_strategy",
@@ -156,12 +156,16 @@ if __name__ == "__main__":
     parser.add_argument("--wavelet_signal_extension_mode", type=str, default="periodization")
     parser.add_argument("--wavelet_dwt_level", type=int, default=2)
 
+    parser.add_argument("--loss_func", type=str, choices=["huber", "mse"], default="huber")
+    # parser.add_argument("--lazy_window",type=bool, default=False, help="whether to use lazy loading for windows")
+    # parser.add_argument("--cache_dir", type=str, default="~/.cache/wavelet_moe", help="directory for caching datasets and models")
+
     args = parser.parse_args()
 
     if args.normalization_method == "none":
         args.normalization_method = None
 
-    # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
     runner = WaveletMoeRunner(
         model_path=args.model_path,

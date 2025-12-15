@@ -6,8 +6,8 @@ from operator import mul
 
 import torch
 
-# from DualWaveletMoE.wavelet_moe.datasets._wavelet_moe_dataset import TimeSeriesSingleDataset, TimeSeriesMultipleDataset
-from wavelet_moe.datasets.wavelet_moe_dataset import WaveletMoeMultipleDataset, WaveletMoeWindowDataset, WaveletMoeWindowTensorDataset
+from wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesSingleDataset, TimeSeriesMultipleDataset
+from wavelet_moe.datasets.dataset_time300B import WaveletMoeMultipleDomainDataset, WaveletMoeWindowDataset, WaveletMoeWindowTensorDataset
 from wavelet_moe.datasets.wavelet_data_collator import WaveletTimeSeriesDataCollator
 from wavelet_moe.models.modeling_wavelet_moe import WaveletMoeForPrediction, WaveletMoeConfig
 from wavelet_moe.trainer.hf_trainer import WaveletMoETrainingArguments, WaveletMoeTrainer
@@ -187,7 +187,8 @@ class WaveletMoeRunner:
         # Training
         # load dataset & data collator
         # dataset = TimeSeriesMultipleDataset(root_path = train_config["data_path"])
-        train_dataset, val_dataset = self._prepare_dataset(train_config)
+        # train_dataset, val_dataset = self._prepare_chronos_dataset(train_config)
+        train_dataset, val_dataset = self._prepare_single_dataset(train_config)
 
         data_collator = WaveletTimeSeriesDataCollator(
             batch_size = micro_batch_size,
@@ -213,7 +214,8 @@ class WaveletMoeRunner:
         return trainer.model
     
 
-    def _prepare_dataset(self, config):
+    # TODO: Adaption for Time-300B
+    def _prepare_time300b_dataset(self, config):
         data_path = config["data_path"]
 
         context_length = int(config.get("context_length", config["max_length"]))
@@ -227,7 +229,7 @@ class WaveletMoeRunner:
         cache_dir = config.get("dataset_cache_path", None)
         use_cache = bool(config.get("use_dataset_cache", True))
 
-        base_ds = WaveletMoeMultipleDataset(
+        base_ds = WaveletMoeMultipleDomainDataset(
             data_folder=data_path,
             normalization_method=None,
             cache_dir=cache_dir,
@@ -269,6 +271,22 @@ class WaveletMoeRunner:
             train_ds.subset_names = window_ds.subset_names
 
         return train_ds, val_ds
+
+
+    # TODO: mind this.
+    def _prepare_chronos_dataset(self, config):
+        train_dataset = TimeSeriesMultipleDataset(
+            root_path = config["data_path"],
+            dataset_names = ["chronos_processed"]
+        )
+        val_dataset = None
+        return train_dataset, val_dataset
+    
+
+    def _prepare_single_dataset(self, config):
+        train_dataset = TimeSeriesSingleDataset(ds_path = config["data_path"])
+        val_dataset = None
+        return train_dataset, val_dataset
 
 
 def setup_seed(seed: int = 9899):
