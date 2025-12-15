@@ -17,7 +17,7 @@ class WaveletMoeConfig(PretrainedConfig):
             num_attention_heads: int = 32,
             num_key_value_heads: int = None,
             hidden_act: str = "silu",
-            num_experts_per_tok: int = 2,
+            num_experts_per_token: int = 2,
             num_experts: int = 1,
             max_position_embeddings: int = 32768,
             initializer_range: float = 0.02,
@@ -25,15 +25,15 @@ class WaveletMoeConfig(PretrainedConfig):
             use_dense: bool = False,
             rope_theta: int = 10000,
             attention_dropout: float = 0.0,
-            apply_aux_loss: bool = True,
-            router_aux_loss_factor: float = 0.02,
+            use_load_balance_loss: bool = True,
+            load_balance_loss_factor: float = 0.02,
             tie_word_embeddings: bool = False,
             wavelet_function: str = "bior2.2",
             wavelet_signal_extension_mode: str = "periodization",
             wavelet_dwt_level: int = 2,
             loss_func: str = "huber",
-            use_topk_kv: bool = True,
-            topk_kv: int = None,
+            # use_topk_kv: bool = True,
+            # topk_kv: int = None,
             **kwargs,
     ):  
         self.hidden_size = hidden_size
@@ -48,17 +48,17 @@ class WaveletMoeConfig(PretrainedConfig):
         self.num_key_value_heads = num_key_value_heads
         self.hidden_act = hidden_act
         
-        self.num_experts_per_tok = num_experts_per_tok
+        self.num_experts_per_token = num_experts_per_token
         self.num_experts = num_experts
         self.initializer_range = initializer_range
         self.rms_norm_eps = rms_norm_eps
         self.use_dense = use_dense
         self.rope_theta = rope_theta
         self.attention_dropout = attention_dropout
-        self.apply_aux_loss = apply_aux_loss
-        self.router_aux_loss_factor = router_aux_loss_factor
+        self.use_load_balance_loss = use_load_balance_loss
+        self.load_balance_loss_factor = load_balance_loss_factor
 
-        assert self.use_dense ^ self.apply_aux_loss, 'Both use_dense and apply_aux_loss cannot be set to True or False at the same time.'
+        assert self.use_dense ^ self.use_load_balance_loss, 'Both use_dense and use_load_balance_loss cannot be set to True or False at the same time.'
 
         if patch_size%2 != 0:
             raise ValueError(f"Patch size should be multiple of 2, not {patch_size}.")
@@ -74,10 +74,10 @@ class WaveletMoeConfig(PretrainedConfig):
         self.wavelet_dwt_level = wavelet_dwt_level
         self.loss_func = loss_func
 
-        self.use_topk_kv = use_topk_kv
-        self.topk_kv = topk_kv
-        if use_topk_kv and topk_kv is None:
-            raise ValueError(f"topk_kv should not be None if filter MHA is used.")
+        # self.use_topk_kv = use_topk_kv
+        # self.topk_kv = topk_kv
+        # if use_topk_kv and topk_kv is None:
+        #     raise ValueError(f"topk_kv should not be None if filter MHA is used.")
 
         kwargs.pop('tie_word_embeddings', None)
         super().__init__(

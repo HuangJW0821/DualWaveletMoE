@@ -154,6 +154,7 @@ class TimeSeriesMultipleDataset(Dataset):
         local_idx = self.rng.randint(0, len(dataset) - 1)
         return dataset[local_idx]
 
+
 class TimeSeriesWindowedSingleDataset(Dataset):
     """
     Dataset class for single dataset, applicable for evaluation. \n

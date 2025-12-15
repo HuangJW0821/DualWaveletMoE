@@ -9,8 +9,9 @@ import transformers
 import torch
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import get_scheduler
+import torch.nn as nn
+from typing import Dict, Union, Any
 
-# Copied from time_moe.trainer.hf_trainer with TimeMoe -> WaveletMoe
 
 class WaveletMoeTrainer(transformers.Trainer):
     epsilon = 1e-8
@@ -47,7 +48,6 @@ class WaveletMoeTrainer(transformers.Trainer):
             # Inspect model forward signature to keep only the arguments it accepts.
             signature = inspect.signature(self.model.forward)
             params = list(signature.parameters.keys())
-            # Labels may be named label or label_ids, the default data collator handles that.
             self._signature_columns = list(set(
                 params + self.needed_column_names
             ))

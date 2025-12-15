@@ -1,0 +1,46 @@
+{
+  "_name_or_path": "/data/home/weibin/ckpt_50m/checkpoint-200000",
+  "apply_aux_loss": true,
+  "architectures": [
+    "WaveletMoeForPrediction"
+  ],
+  "attention_dropout": 0.0,
+  "auto_map": {
+    "AutoConfig": "..models.configuration_wavelet_moe.WaveletMoeForPrediction",
+    "AutoModelForCausalLM": "..models.modeling_wavelet_moe.WaveletMoeForPrediction"
+  },
+  "hidden_act": "silu",
+  "hidden_size": 384,
+  "horizon_lengths": [
+    1,
+    4,
+    8,
+    16
+  ],
+  "initializer_range": 0.02,
+  "input_size": 16,
+  "intermediate_size": 1536,
+  "loss_func": "huber",
+  "max_position_embeddings": 512,
+  "model_type": "wavelet_moe",
+  "num_attention_heads": 12,
+  "num_experts": 8,
+  "num_experts_per_tok": 2,
+  "num_hidden_layers": 12,
+  "num_key_value_heads": 12,
+  "patch_size": 8,
+  "rms_norm_eps": 1e-06,
+  "rope_theta": 10000,
+  "router_aux_loss_factor": 0.02,
+  "tie_word_embeddings": false,
+  "time_axis_loss_factor": 0.5,
+  "torch_dtype": "float32",
+  "transformers_version": "4.40.1",
+  "use_cache": true,
+  "use_dense": false,
+  "wavelet_dwt_level": 2,
+  "wavelet_function": "bior2.2",
+  "wavelet_signal_extension_mode": "periodization",
+  "use_topk_kv": true,
+  "topk_kv": 10
+}

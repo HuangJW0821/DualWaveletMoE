@@ -10,7 +10,7 @@ import torch.distributed as dist
 from torch.utils.data import DistributedSampler, DataLoader
 from tqdm import tqdm
 
-from wavelet_moe.datasets.wavelet_moe_dataset import ChronosTensorDataset, WaveletTimeSeriesDataset
+from DualWaveletMoE.wavelet_moe.datasets.wavelet_moe_dataset import ChronosTensorDataset, WaveletTimeSeriesDataset
 from wavelet_moe.models.modeling_wavelet_moe import WaveletMoeForPrediction
 
 def setup_nccl(rank, world_size, master_addr='127.0.0.1', master_port=9899):

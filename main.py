@@ -10,21 +10,21 @@ if __name__ == "__main__":
         "--data_path",
         "-d",
         type=str,
-        default="/data/home/dataset/wavelet_moe_multivariate/train_synthetic",
+        default="/data/home/dataset",
         help="Path to training data. (Folder contains data files, or data file)",
     )
     parser.add_argument(
         "--model_path",
         "-m",
         type=str,
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/WaveletMoE_multivariate/configs/uni_50M_syn_from_scratch/config.json",
+        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/configs/dual_test/config.json",
         help="Path to pretrained model. Default: ./wavelet_moe/configs/config.json",
     )
     parser.add_argument(
         "--output_path", 
         "-o", 
         type=str, 
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/WaveletMoE_multivariate/logs/uni_50M_syn_from_scratch"
+        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/dual_test"
     )
     parser.add_argument(
         "--max_length",
@@ -98,14 +98,14 @@ if __name__ == "__main__":
         "--deepspeed", type=str, default=None, help="DeepSpeed config file path"
     )
 
-    parser.add_argument(
-        "--from_scratch", action="store_true", help="train from scratch"
-    )
     # parser.add_argument(
-    #     "--from_scratch", default="true", help="train from scratch"
+    #     "--from_scratch", action="store_true", help="train from scratch"
     # )
     parser.add_argument(
-        "--save_steps", type=int, default=1000, help="number of steps to save model"
+        "--from_scratch", default=True, help="train from scratch"
+    )
+    parser.add_argument(
+        "--save_steps", type=int, default=5000, help="number of steps to save model"
     )
     parser.add_argument(
         "--save_strategy",
@@ -141,9 +141,7 @@ if __name__ == "__main__":
     parser.add_argument("--adam_beta1", type=float, default=0.9, help="adam beta1")
     parser.add_argument("--adam_beta2", type=float, default=0.95, help="adam beta2")
     parser.add_argument("--adam_epsilon", type=float, default=1e-8, help="adam epsilon")
-    parser.add_argument(
-        "--max_grad_norm", type=float, default=1.0, help="max gradient norm"
-    )
+    parser.add_argument("--max_grad_norm", type=float, default=1.0, help="max gradient norm")
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
@@ -155,6 +153,10 @@ if __name__ == "__main__":
     parser.add_argument("--wavelet_function", type=str, default="bior2.2")
     parser.add_argument("--wavelet_signal_extension_mode", type=str, default="periodization")
     parser.add_argument("--wavelet_dwt_level", type=int, default=2)
+
+    parser.add_argument("--loss_func", type=str, choices=["huber", "mse"], default="huber")
+    # parser.add_argument("--lazy_window",type=bool, default=False, help="whether to use lazy loading for windows")
+    # parser.add_argument("--cache_dir", type=str, default="~/.cache/wavelet_moe", help="directory for caching datasets and models")
 
     args = parser.parse_args()
 

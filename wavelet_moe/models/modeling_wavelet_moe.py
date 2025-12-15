@@ -2,6 +2,7 @@ import os
 import warnings
 import math
 from typing import Optional, Tuple, List, Union
+from tqdm import tqdm
 
 import numpy as np
 import torch
@@ -245,6 +246,7 @@ class WaveletMoeDualRouter(torch.nn.Module):
     """
 
     def __init__(self, config: WaveletMoeConfig):
+        super().__init__()
         self.hidden_size = config.hidden_size
         self.before_routing_norm = WaveletMoeRMSNorm(config.hidden_size * 2, eps = config.rms_norm_eps)
         self.routed_experts_gate = torch.nn.Linear(config.hidden_size * 2, config.num_experts, bias=False)
@@ -276,7 +278,7 @@ class WaveletMoeDualRouter(torch.nn.Module):
         # normalize between time & wavelet modality
         concat_hidden_states = self.before_routing_norm(concat_hidden_states)
 
-        # routing for routed experts, shape [batch_sz * token_num, hidden_sz * 2]
+        # routing for routed experts, shape [batch_sz * token_num, routed_experts_num]
         routed_experts_router_logits = self.routed_experts_gate(concat_hidden_states)
 
         # routing for shared experts, shape `[batch_sz * token_num, shared_experts_num]`, `shared_experts_num==1` by default.
@@ -292,7 +294,7 @@ class WaveletMoeSparseExpertsBlock(torch.nn.Module):
     def __init__(self, config: WaveletMoeConfig):
         super().__init__()
         self.config = config
-        self.top_k = config.num_experts_per_tok     # top-k per token
+        self.top_k = config.num_experts_per_token     # top-k per token
         self.hidden_size = config.hidden_size
         self.num_experts = config.num_experts
 
@@ -570,13 +572,13 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
         # shape [batch_sz, num_heads, q_len, kv_len]
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
-        if attn_weights.size() != (bsz, 1, q_len, kv_seq_len):
-            raise ValueError(f"Self attention weights should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attn_weights.size()}")
+        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+            raise ValueError(f"Self attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is {attn_weights.size()}")
 
         # masking attention weights with attn_mask
         if causal_attn_mask is not None:
 
-            if causal_attn_mask.size() != (bsz, self.num_heads, q_len, kv_seq_len):
+            if causal_attn_mask.size() != (bsz, 1, q_len, kv_seq_len):
                 raise ValueError(f"Time Attention mask should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is {causal_attn_mask.size()}")
             
             if self.config.use_topk_kv:
@@ -768,6 +770,7 @@ class WaveletMoeDecoderLayer(torch.nn.Module):
             output_attentions
         )
 
+        # FFN Layer (Dual MoE Layer)
         time_hidden_states, wavelet_hidden_states, router_logits = self.ffn_layer(time_hidden_states, wavelet_hidden_states)
 
         # output settings
@@ -909,7 +912,7 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
         if time_seq is not None and time_seq_embeds is not None:
             raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
         elif time_seq is not None and wavelet_seq is not None:
-            if time_seq.device != wavelet_seq.devices:
+            if time_seq.device != wavelet_seq.device:
                 wavelet_seq.to(time_seq.device)
             batch_size, token_num, _ = time_seq.shape
         elif time_seq_embeds is not None and wavelet_seq_embeds is not None:
@@ -1081,9 +1084,9 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
     def __init__(self, config: WaveletMoeConfig):
         super().__init__(config)
         self.config = config
-        self.num_experts_per_tok = config.num_experts_per_tok
-        self.apply_aux_loss = config.apply_aux_loss
-        self.router_aux_loss_factor = config.router_aux_loss_factor
+        self.num_experts_per_token = config.num_experts_per_token
+        self.use_load_balance_loss = config.use_load_balance_loss
+        self.load_balance_loss_factor = config.load_balance_loss_factor
 
         self.model = WaveletMoeModel(config)
 
@@ -1177,38 +1180,44 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
 
         time_hidden_state, wavelet_hidden_state = outputs.last_time_hidden_state, outputs.last_wavelet_hidden_state
         time_predictions, wavelet_predictions = None, None
-        loss, aux_loss = None, None
+        loss, ar_loss, time_ar_loss, wavelet_ar_loss, load_balance_loss = None, None, None, None, None
 
         # when training
         if time_seq_labels is not None:  
             # auto regressive loss
             ar_loss, time_ar_loss, wavelet_ar_loss = 0.0, 0.0, 0.0
-
+            
             for output_head, horizon_length in zip(self.dual_output_heads, self.config.horizon_lengths):
                 one_time_predictions, one_wavelet_predictions = output_head(time_hidden_state, wavelet_hidden_state)
 
                 one_time_ar_loss = self._calc_ar_loss(one_time_predictions, time_seq_labels, loss_masks, horizon_length)
                 one_wavelet_ar_loss = self._calc_ar_loss(one_wavelet_predictions, wavelet_seq_labels, loss_masks, horizon_length)
                 
-                ar_loss += (one_time_ar_loss + one_wavelet_ar_loss)
+                time_ar_loss += one_time_ar_loss
+                wavelet_ar_loss += one_wavelet_ar_loss
                 
                 if time_predictions is None:
                     time_predictions, wavelet_predictions = one_time_predictions, one_wavelet_predictions
 
-            loss = ar_loss / len(self.config.horizon_lengths)
+            output_head_num = len(self.config.horizon_lengths)
+            time_ar_loss, wavelet_ar_loss = time_ar_loss / output_head_num, wavelet_ar_loss / output_head_num
+            ar_loss = time_ar_loss + wavelet_ar_loss
+            loss = ar_loss.clone()
 
-            if self.apply_aux_loss:
-                router_logits = outputs.router_logits
+            if self.use_load_balance_loss:
+                router_logits = outputs.all_router_logits
 
-                temporal_aux_loss = self._calc_load_balancing_loss(
-                    router_logits
-                    top_k = self.num_experts_per_tok,
+                load_balance_loss = self._calc_load_balancing_loss(
+                    router_logits,
+                    top_k = self.num_experts_per_token,
                     num_experts = self.config.num_experts,
                     attention_mask = loss_masks
                 )
 
-                loss += self.router_aux_loss_factor * temporal_aux_loss.to(loss.device)
+                loss += self.load_balance_loss_factor * load_balance_loss.to(loss.device)
         
+            # tqdm.write(f"Loss: [{loss.item()}], AR_Loss: [{ar_loss.item()}], Load_Balance_Loss: [{loss.item()}], Time_AR_Loss: [{time_ar_loss.item()}], Wavelet_AR_Loss: [{wavelet_ar_loss.item()}], Load_Balance_Loss: [{load_balance_loss.item()}]")
+
         # TODO: inference modules for DualWaveletMoE
         # when inferencing
         else:   
@@ -1233,12 +1242,18 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
                 predictions = predictions[:, :, :max_horizon_length, :]
 
         return WaveletMoeCausalLMOutputWithPast(
-            loss=loss,
-            aux_loss=aux_loss,
-            logits=predictions,
-            hidden_states=outputs.hidden_states,
-            time_attentions=outputs.time_attentions,
-            gruop_attentions=outputs.gruop_attentions,
+            loss = loss,
+            ar_loss = ar_loss,
+            time_ar_loss = time_ar_loss,
+            wavelet_ar_loss = wavelet_ar_loss,
+            load_balance_loss = load_balance_loss,
+            time_predictions = time_predictions,
+            wavelet_predictions = wavelet_predictions,    
+            all_time_hidden_states = outputs.all_time_hidden_states,
+            all_wavelet_hidden_states = outputs.all_wavelet_hidden_states,
+            all_time_self_attns = outputs.all_time_self_attns,
+            all_wavelet_self_attns = outputs.all_wavelet_self_attns,
+            all_router_logits = outputs.all_router_logits
         )
 
 
@@ -1261,7 +1276,7 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
 
         # pad horizon_len-1 zero in dim of token_num, make sure windowing wont out of idx.
         # shape: [B, token_num, token_len] -> [B, token_num + horizon_len -1, token_len]
-        padded_labels = F.pad(labels, (0, 0, 0, horizon_len - 1), mode='constant', value=0)  
+        padded_labels = torch.nn.functional.pad(labels, (0, 0, 0, horizon_len - 1), mode='constant', value=0)  
 
         # collect labels for every tokens & every horizon step
         # shape -> [B, token_num, horizon_len, token_len]
@@ -1362,11 +1377,9 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
     def _calc_load_balancing_loss(
             self,
             gate_logits: Union[torch.Tensor, Tuple[torch.Tensor], List[torch.Tensor]],
-            group_ids: torch.Tensor,
             top_k: int,
             num_experts: int,
-            attention_mask: torch.Tensor,
-            time_axis_loss_factor: float = 0.5
+            attention_mask: torch.Tensor
     ) -> torch.Tensor:
         """
         Computes auxiliary load balancing loss within time & channel axis
