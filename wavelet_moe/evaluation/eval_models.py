@@ -65,7 +65,9 @@ class WaveletMoEForEvaluation(ModelForEvaluation):
         input_length = self.input_length
         prediction_length = self.prediction_length
 
-        input_ids = batch["input_ids"]
+        # input_ids = batch["input_ids"]
+        input_ids = (torch.cat((batch["time_seq"], batch["wavelet_seq"]), dim=2)).to(device)
+
         seq_len = input_ids.shape[1]
 
         if input_length + prediction_length > seq_len:
@@ -170,7 +172,7 @@ class TimeMoEForEvaluation(ModelForEvaluation):
         prediction_length = self.prediction_length
         patch_size = self.patch_size
 
-        input_ids = batch["input_ids"]
+        input_ids = batch["time_seq"]
         batch_size, seq_len, _ = input_ids.shape
 
         if input_length + prediction_length > seq_len:
@@ -182,7 +184,8 @@ class TimeMoEForEvaluation(ModelForEvaluation):
         inputs = inputs.reshape(batch_size, input_length * patch_size)
         labels = labels.reshape(batch_size, prediction_length * patch_size)
 
-        group_ids = batch["group_ids"].to(device).to(model.dtype)
+        # group_ids = batch["group_ids"].to(device).to(model.dtype)
+        group_ids = None
 
         return group_ids, inputs, labels
 
@@ -205,7 +208,7 @@ class TimeMoEForEvaluation(ModelForEvaluation):
 
         preds = outputs[:, -(self.prediction_length * self.patch_size) :]
 
-        return group_ids, preds, labels
+        return preds, labels
 
     def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
         """
@@ -269,7 +272,7 @@ class ChronosForEvaluation(ModelForEvaluation):
         prediction_length = self.prediction_length
         patch_size = self.patch_size
 
-        input_ids = batch["input_ids"]
+        input_ids = batch["time_seq"]
         batch_size, seq_len, _ = input_ids.shape
 
         if input_length + prediction_length > seq_len:
@@ -282,7 +285,8 @@ class ChronosForEvaluation(ModelForEvaluation):
         inputs = inputs.reshape(batch_size, input_length * patch_size)
         labels = labels.reshape(batch_size, prediction_length * patch_size)
 
-        group_ids = batch["group_ids"]
+        # group_ids = batch["group_ids"]
+        group_ids = None
 
         return group_ids, inputs, labels
 
@@ -306,7 +310,7 @@ class ChronosForEvaluation(ModelForEvaluation):
         mid_q = preds.size(1) // 2  # 20 // 2 = 10
         preds = preds[:, mid_q, :]
 
-        return group_ids, preds, labels
+        return preds, labels
 
     def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
         """

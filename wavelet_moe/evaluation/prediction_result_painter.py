@@ -8,7 +8,7 @@ from typing import Dict, Tuple, Optional
 import numpy as np
 import matplotlib.pyplot as plt
 
-from DualWaveletMoE.wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesWindowedSingleDataset
+from wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesWindowedSingleDataset
 from wavelet_moe.datasets.wavelet_data_collator import WaveletTimeSeriesDataCollator
 from wavelet_moe.evaluation.eval_models import ModelForEvaluation
 from wavelet_moe.evaluation.eval_metrics import MAEMetric, MSEMetric
