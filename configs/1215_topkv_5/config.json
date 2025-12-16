@@ -41,5 +41,5 @@
   "wavelet_function": "bior2.2",
   "wavelet_signal_extension_mode": "periodization",
   "use_topk_kv": true,
-  "topk_kv": 10
+  "topk_kv": 5
 }

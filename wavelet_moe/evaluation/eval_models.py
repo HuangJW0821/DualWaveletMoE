@@ -5,8 +5,6 @@ from transformers import AutoModelForCausalLM
 import numpy as np
 import pandas as pd
 
-from chronos import Chronos2Pipeline, ChronosPipeline
-
 from wavelet_moe.models.modeling_wavelet_moe import WaveletMoeForPrediction
 
 class ModelForEvaluation:
@@ -21,7 +19,7 @@ class ModelForEvaluation:
         pass
 
     @abstractmethod
-    def generate(self, batch: Dict, target_idx: Optional[Tuple[int]] = None):
+    def generate(self, batch: Dict):
         pass
     
     @abstractmethod
@@ -57,10 +55,9 @@ class WaveletMoEForEvaluation(ModelForEvaluation):
          batch: `Dict`
         
         Returns:
-         (group_ids, inputs, labels):
-         - **group_ids**: `torch.Tensor`, shape `(batch_size, )`.
-         - **inputs**: `torch.Tensor`, shape `(batch_size, input_length, token_len)`.
-         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length, token_len)`.
+         (inputs, labels):
+         - **inputs**: `torch.Tensor`, shape `(batch_size, input_length, patch_size * 2)`.
+         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length, patch_size * 2)`.
         """
         model = self.model
         device = self.device
@@ -77,11 +74,9 @@ class WaveletMoEForEvaluation(ModelForEvaluation):
         inputs = input_ids[:, : input_length, :].to(device).to(model.dtype)
         labels = input_ids[:, input_length : input_length + prediction_length, :].to(device).to(model.dtype)
         
-        group_ids = batch["group_ids"].to(device).to(model.dtype)
+        return inputs, labels
 
-        return group_ids, inputs, labels
-
-    def generate(self, batch: Dict, target_idx: Optional[Tuple[int]] = None):
+    def generate(self, batch: Dict):
         """
         Args:
          batch: `Dict`
@@ -92,18 +87,16 @@ class WaveletMoEForEvaluation(ModelForEvaluation):
          - **preds**:  `torch.Tensor`, shape `(batch_size, pred_length, token_len)`.
          - **labels**: `torch.Tensor`, shape `(batch_size, pred_length, token_len)`.
         """
-        group_ids, inputs, labels = self._prepare_items_for_generate(batch)
+        input_ids, labels = self._prepare_items_for_generate(batch)
 
         outputs = self.model.generate(
-            input_ids = inputs,
-            group_ids = group_ids,
+            input_ids = input_ids,
             max_length = self.input_length + self.prediction_length,
-            target_idx = target_idx
         )
 
         preds = outputs[:, -self.prediction_length :, :]
 
-        return group_ids, preds, labels
+        return preds, labels
 
     def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
         """
@@ -137,6 +130,206 @@ class WaveletMoEForEvaluation(ModelForEvaluation):
         return inputs, labels, preds
 
 
+class TimeMoEForEvaluation(ModelForEvaluation):
+    def __init__(
+            self, 
+            model_path: str, 
+            device: torch.device, 
+            input_length: int, 
+            prediction_length: int,
+            patch_size: int = 8
+        ):
+
+        super().__init__(model_path, input_length, prediction_length, patch_size)
+        
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            device_map = device,
+            trust_remote_code=True,
+        )
+
+        self.model = model
+        self.device = device
+        self.model.eval()
+
+    def _prepare_items_for_generate(self, batch: Dict):
+        """
+        Args:
+         batch: `Dict`
+        
+        Returns:
+         (group_ids, inputs, labels):
+         - **group_ids**: `torch.Tensor`, shape `(batch_size, )`.
+         - **inputs**: `torch.Tensor`, shape `(batch_size, input_length * patch_size)`.
+         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+        """
+        model = self.model
+        device = self.device
+
+        input_length = self.input_length
+        prediction_length = self.prediction_length
+        patch_size = self.patch_size
+
+        input_ids = batch["input_ids"]
+        batch_size, seq_len, _ = input_ids.shape
+
+        if input_length + prediction_length > seq_len:
+            raise ValueError(f"Input length + Pred length [{input_length} + {prediction_length} = {input_length + prediction_length}] should be shorter than seq_len [{seq_len}]")
+
+        inputs = input_ids[:, : input_length, : patch_size].to(device).to(model.dtype)
+        labels = input_ids[:, input_length : input_length + prediction_length, : patch_size].to(device).to(model.dtype)
+        
+        inputs = inputs.reshape(batch_size, input_length * patch_size)
+        labels = labels.reshape(batch_size, prediction_length * patch_size)
+
+        group_ids = batch["group_ids"].to(device).to(model.dtype)
+
+        return group_ids, inputs, labels
+
+    def generate(self, batch: Dict, target_idx: Optional[Tuple[int]]=int):
+        """
+        Args:
+         batch: `Dict`
+        
+        Returns:
+         (preds, labels):
+         - **preds**:  `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+        """
+        group_ids, inputs, labels = self._prepare_items_for_generate(batch)
+
+        outputs = self.model.generate(
+            input_ids = inputs,
+            max_length = (self.input_length + self.prediction_length) * self.patch_size,
+        )
+
+        preds = outputs[:, -(self.prediction_length * self.patch_size) :]
+
+        return group_ids, preds, labels
+
+    def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
+        """
+        Args:
+         batch: `Dict`
+         preds: `torch.Tensor`, shape `(batch_size, pred_length, token_len)`
+        
+        Returns:
+         (inputs, labels, seq_len):
+         - **inputs**: `np.ndarray`, shape `(batch_size, input_length * patch_size)`.
+         - **labels**: `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
+         - **preds**:  `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
+        """
+
+        _, inputs, labels = self._prepare_items_for_generate(batch)
+
+        inputs = np.array(inputs.cpu())
+        labels = np.array(labels.cpu())
+        preds = np.array(preds.cpu())
+
+        return inputs, labels, preds
+
+
+class ChronosForEvaluation(ModelForEvaluation):
+    def __init__(
+            self,
+            model_path: str,
+            device: torch.device,
+            input_length: int,
+            prediction_length: int,
+            patch_size: int = 8
+    ):
+        from chronos import ChronosPipeline
+
+        super().__init__(model_path, input_length, prediction_length, patch_size)
+
+        model = ChronosPipeline.from_pretrained(
+                        model_path,
+                        device_map=device,
+                        )
+
+        self.model = model
+        self.device = device
+        #self.model.eval()
+
+    def _prepare_items_for_generate(self, batch: Dict):
+        """
+        Args:
+         batch: `Dict`
+
+        Returns:
+         (group_ids, inputs, labels):
+         - **group_ids**: `torch.Tensor`, shape `(batch_size, )`.
+         - **inputs**: `torch.Tensor`, shape `(batch_size, input_length * patch_size)`.
+         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+        """
+        model = self.model
+        device = self.device
+
+        input_length = self.input_length
+        prediction_length = self.prediction_length
+        patch_size = self.patch_size
+
+        input_ids = batch["input_ids"]
+        batch_size, seq_len, _ = input_ids.shape
+
+        if input_length + prediction_length > seq_len:
+            raise ValueError(
+                f"Input length + Pred length [{input_length} + {prediction_length} = {input_length + prediction_length}] should be shorter than seq_len [{seq_len}]")
+
+        inputs = input_ids[:, : input_length, : patch_size]
+        labels = input_ids[:, input_length: input_length + prediction_length, : patch_size]
+
+        inputs = inputs.reshape(batch_size, input_length * patch_size)
+        labels = labels.reshape(batch_size, prediction_length * patch_size)
+
+        group_ids = batch["group_ids"]
+
+        return group_ids, inputs, labels
+
+    def generate(self, batch: Dict, target_idx: Optional[Tuple[int]] = int):
+        """
+        Args:
+         batch: `Dict`
+
+        Returns:
+         (preds, labels):
+         - **preds**:  `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+        """
+        group_ids, inputs, labels = self._prepare_items_for_generate(batch)
+
+        outputs = self.model.predict(inputs,self.prediction_length * self.patch_size)
+
+
+        preds = outputs[:, -(self.prediction_length * self.patch_size):]
+
+        mid_q = preds.size(1) // 2  # 20 // 2 = 10
+        preds = preds[:, mid_q, :]
+
+        return group_ids, preds, labels
+
+    def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
+        """
+        Args:
+         batch: `Dict`
+         preds: `torch.Tensor`, shape `(batch_size, pred_length, token_len)`
+
+        Returns:
+         (inputs, labels, seq_len):
+         - **inputs**: `np.ndarray`, shape `(batch_size, input_length * patch_size)`.
+         - **labels**: `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
+         - **preds**:  `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
+        """
+
+        _, inputs, labels = self._prepare_items_for_generate(batch)
+
+        inputs = np.array(inputs.cpu())
+        labels = np.array(labels.cpu())
+        preds = np.array(preds.cpu())
+
+        return inputs, labels, preds
+
+
 class Chronos2ForEvaluation(ModelForEvaluation):
     def __init__(
             self, 
@@ -146,6 +339,7 @@ class Chronos2ForEvaluation(ModelForEvaluation):
             prediction_length: int,
             patch_size: int = 8
         ):
+        from chronos import Chronos2Pipeline
 
         super().__init__(model_path, input_length, prediction_length, patch_size)
         
@@ -280,200 +474,3 @@ class Chronos2ForEvaluation(ModelForEvaluation):
 
         return inputs, labels, preds
 
-
-class TimeMoEForEvaluation(ModelForEvaluation):
-    def __init__(
-            self, 
-            model_path: str, 
-            device: torch.device, 
-            input_length: int, 
-            prediction_length: int,
-            patch_size: int = 8
-        ):
-
-        super().__init__(model_path, input_length, prediction_length, patch_size)
-        
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            device_map = device,
-            trust_remote_code=True,
-        )
-
-        self.model = model
-        self.device = device
-        self.model.eval()
-
-    def _prepare_items_for_generate(self, batch: Dict):
-        """
-        Args:
-         batch: `Dict`
-        
-        Returns:
-         (group_ids, inputs, labels):
-         - **group_ids**: `torch.Tensor`, shape `(batch_size, )`.
-         - **inputs**: `torch.Tensor`, shape `(batch_size, input_length * patch_size)`.
-         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
-        """
-        model = self.model
-        device = self.device
-
-        input_length = self.input_length
-        prediction_length = self.prediction_length
-        patch_size = self.patch_size
-
-        input_ids = batch["input_ids"]
-        batch_size, seq_len, _ = input_ids.shape
-
-        if input_length + prediction_length > seq_len:
-            raise ValueError(f"Input length + Pred length [{input_length} + {prediction_length} = {input_length + prediction_length}] should be shorter than seq_len [{seq_len}]")
-
-        inputs = input_ids[:, : input_length, : patch_size].to(device).to(model.dtype)
-        labels = input_ids[:, input_length : input_length + prediction_length, : patch_size].to(device).to(model.dtype)
-        
-        inputs = inputs.reshape(batch_size, input_length * patch_size)
-        labels = labels.reshape(batch_size, prediction_length * patch_size)
-
-        group_ids = batch["group_ids"].to(device).to(model.dtype)
-
-        return group_ids, inputs, labels
-
-    def generate(self, batch: Dict, target_idx: Optional[Tuple[int]]=int):
-        """
-        Args:
-         batch: `Dict`
-        
-        Returns:
-         (preds, labels):
-         - **preds**:  `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
-         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
-        """
-        group_ids, inputs, labels = self._prepare_items_for_generate(batch)
-
-        outputs = self.model.generate(
-            input_ids = inputs,
-            max_length = (self.input_length + self.prediction_length) * self.patch_size,
-        )
-
-        preds = outputs[:, -(self.prediction_length * self.patch_size) :]
-
-        return group_ids, preds, labels
-
-    def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
-        """
-        Args:
-         batch: `Dict`
-         preds: `torch.Tensor`, shape `(batch_size, pred_length, token_len)`
-        
-        Returns:
-         (inputs, labels, seq_len):
-         - **inputs**: `np.ndarray`, shape `(batch_size, input_length * patch_size)`.
-         - **labels**: `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
-         - **preds**:  `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
-        """
-
-        _, inputs, labels = self._prepare_items_for_generate(batch)
-
-        inputs = np.array(inputs.cpu())
-        labels = np.array(labels.cpu())
-        preds = np.array(preds.cpu())
-
-        return inputs, labels, preds
-
-
-class ChronosForEvaluation(ModelForEvaluation):
-    def __init__(
-            self,
-            model_path: str,
-            device: torch.device,
-            input_length: int,
-            prediction_length: int,
-            patch_size: int = 8
-    ):
-        super().__init__(model_path, input_length, prediction_length, patch_size)
-
-        model = ChronosPipeline.from_pretrained(
-                        model_path,
-                        device_map=device,
-                        )
-
-        self.model = model
-        self.device = device
-        #self.model.eval()
-
-    def _prepare_items_for_generate(self, batch: Dict):
-        """
-        Args:
-         batch: `Dict`
-
-        Returns:
-         (group_ids, inputs, labels):
-         - **group_ids**: `torch.Tensor`, shape `(batch_size, )`.
-         - **inputs**: `torch.Tensor`, shape `(batch_size, input_length * patch_size)`.
-         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
-        """
-        model = self.model
-        device = self.device
-
-        input_length = self.input_length
-        prediction_length = self.prediction_length
-        patch_size = self.patch_size
-
-        input_ids = batch["input_ids"]
-        batch_size, seq_len, _ = input_ids.shape
-
-        if input_length + prediction_length > seq_len:
-            raise ValueError(
-                f"Input length + Pred length [{input_length} + {prediction_length} = {input_length + prediction_length}] should be shorter than seq_len [{seq_len}]")
-
-        inputs = input_ids[:, : input_length, : patch_size]
-        labels = input_ids[:, input_length: input_length + prediction_length, : patch_size]
-
-        inputs = inputs.reshape(batch_size, input_length * patch_size)
-        labels = labels.reshape(batch_size, prediction_length * patch_size)
-
-        group_ids = batch["group_ids"]
-
-        return group_ids, inputs, labels
-
-    def generate(self, batch: Dict, target_idx: Optional[Tuple[int]] = int):
-        """
-        Args:
-         batch: `Dict`
-
-        Returns:
-         (preds, labels):
-         - **preds**:  `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
-         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
-        """
-        group_ids, inputs, labels = self._prepare_items_for_generate(batch)
-
-        outputs = self.model.predict(inputs,self.prediction_length * self.patch_size)
-
-
-        preds = outputs[:, -(self.prediction_length * self.patch_size):]
-
-        mid_q = preds.size(1) // 2  # 20 // 2 = 10
-        preds = preds[:, mid_q, :]
-
-        return group_ids, preds, labels
-
-    def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
-        """
-        Args:
-         batch: `Dict`
-         preds: `torch.Tensor`, shape `(batch_size, pred_length, token_len)`
-
-        Returns:
-         (inputs, labels, seq_len):
-         - **inputs**: `np.ndarray`, shape `(batch_size, input_length * patch_size)`.
-         - **labels**: `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
-         - **preds**:  `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
-        """
-
-        _, inputs, labels = self._prepare_items_for_generate(batch)
-
-        inputs = np.array(inputs.cpu())
-        labels = np.array(labels.cpu())
-        preds = np.array(preds.cpu())
-
-        return inputs, labels, preds

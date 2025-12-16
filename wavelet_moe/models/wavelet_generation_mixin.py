@@ -14,9 +14,7 @@ class WaveletGenerationMixin(GenerationMixin):
 
     def _greedy_search(
             self,
-            input_ids: torch.Tensor,
-            group_ids: torch.Tensor,
-            target_idx: Optional[Tuple[int]] = None,
+            input_ids: torch.FloatTensor,
             logits_processor: Optional[LogitsProcessorList] = None,
             stopping_criteria: Optional[StoppingCriteriaList] = None,
             max_length: Optional[int] = None,
@@ -35,38 +33,33 @@ class WaveletGenerationMixin(GenerationMixin):
         # set device
         input_ids_origin_device = input_ids.device
         input_ids = input_ids.to(self.device)
-        group_ids = group_ids.to(self.device)
         
         # Mind this
         # check shape
         if len(input_ids.shape) == 3:
-            batch_size, token_num, token_len = input_ids.shape
+            batch_size, token_num, _ = input_ids.shape
         else:
-            raise ValueError('Input shape must be: [batch_size, seq_len]')
+            raise ValueError('Input shape should be: [batch_size * 2, token_num, patch_size], since time_seq & wavelet_seq are concat at dim=2 to generate input_ids')
         
-        # init logits_processor & stopping_criteria
+        # init logits_processor stopping_criteria, it would be None
         logits_processor = logits_processor if logits_processor is not None else LogitsProcessorList()
+        
+        # init stopping_criteria as transformers.generation.stopping_criteria.MaxLengthCriteria
         stopping_criteria = stopping_criteria if stopping_criteria is not None else StoppingCriteriaList()
         
-        # max_length is deprecated, turn into stopping_criteria
+        # max_length is deprecated, turn into stopping_criteria, we will skip it
         if max_length is not None:
-            warnings.warn(
-                "`max_length` is deprecated in this function, use"
-                " `stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=max_length)])` instead.",
-                UserWarning,
-            )
+            warnings.warn("`max_length` is deprecated in this function, use `stopping_criteria=StoppingCriteriaList([MaxLengthCriteria(max_length=max_length)])` instead.", UserWarning,)
             stopping_criteria = validate_stopping_criteria(stopping_criteria, max_length)
         
-        # set pad_token & eos_token
+        # set pad_token & eos_token, we will skip it
         pad_token_id = pad_token_id if pad_token_id is not None else self.generation_config.pad_token_id
         if eos_token_id is not None:
             stopping_criteria.append(EosTokenCriteria(eos_token_id=eos_token_id))
         else:
             # remove when the method is totally private
             # need to get `eos_token_id` and add stopping criteria, so that generation does not go forever
-            eos_token_id = [
-                criteria.eos_token_id.tolist() for criteria in stopping_criteria if hasattr(criteria, "eos_token_id")
-            ]
+            eos_token_id = [criteria.eos_token_id.tolist() for criteria in stopping_criteria if hasattr(criteria, "eos_token_id")]
             eos_token_id = eos_token_id[0] if eos_token_id else None
             if eos_token_id is None and self.generation_config.eos_token_id is not None:
                 eos_token_id = self.generation_config.eos_token_id
@@ -76,19 +69,11 @@ class WaveletGenerationMixin(GenerationMixin):
         
         # set output flags
         output_scores = output_scores if output_scores is not None else self.generation_config.output_scores
-        output_attentions = (
-            output_attentions if output_attentions is not None else self.generation_config.output_attentions
-        )
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.generation_config.output_hidden_states
-        )
-        return_dict_in_generate = (
-            return_dict_in_generate
-            if return_dict_in_generate is not None
-            else self.generation_config.return_dict_in_generate
-        )
+        output_attentions = (output_attentions if output_attentions is not None else self.generation_config.output_attentions)
+        output_hidden_states = (output_hidden_states if output_hidden_states is not None else self.generation_config.output_hidden_states)
+        return_dict_in_generate = (return_dict_in_generate if return_dict_in_generate is not None else self.generation_config.return_dict_in_generate)
 
-        # init attention / hidden states / scores tuples
+        # init attention / hidden states / scores tuples, all None
         raw_logits = () if (return_dict_in_generate and output_logits) else None
         scores = () if (return_dict_in_generate and output_scores) else None
         decoder_attentions = () if (return_dict_in_generate and output_attentions) else None
@@ -105,29 +90,28 @@ class WaveletGenerationMixin(GenerationMixin):
         max_length = stopping_criteria.max_length
         while self._has_unfinished_sequences(this_peer_finished, synced_gpus, device=input_ids.device):
             # prepare model inputs
-            model_inputs = self.prepare_inputs_for_generation(input_ids, group_ids, **model_kwargs)
+            model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             input_length = input_ids.shape[1]
 
             # forward pass to get next token
             outputs = self(
                 **model_inputs,
-                return_dict=True,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
-                max_horizon_length=max_length - input_length,
-                target_idx = target_idx
+                max_horizon_length=max_length - input_length
             )
 
             if synced_gpus and this_peer_finished:
                 continue  # don't waste resources running the code we don't need
             
-            # shape: [batch_sz, token_num, horizon_len, token_len] -> [batch_sz, horizon_len, token_len]
+            # Mind this: is it OK to concat two modalities' token before logits processor?
+            # shape: [batch_sz, token_num, horizon_len, patch_size * 2] -> [batch_sz, horizon_len, patch_size * 2]
             # horizon_len is decided by scheduling algo.
-            next_token_logits = outputs.logits[:, -1, :]
+            next_token_logits = torch.cat((outputs.time_predictions[:, -1, :], outputs.wavelet_predictions[:, -1, :]), dim=2)
 
-            # pre-process distribution
-            # shape: [batch_sz, horizon_len, token_len]
+            # it is OK since logits_precessor are empty list, we dont use it in DualWaveletMoE
+            # shape: [batch_sz, horizon_len, patch_size * 2]
             next_tokens_scores = logits_processor(input_ids, next_token_logits)
 
             # Store scores, attentions and hidden_states when required
@@ -154,7 +138,7 @@ class WaveletGenerationMixin(GenerationMixin):
             # actually is next horizon_len tokens
             next_tokens = next_tokens_scores
 
-            # finished sentences should have their next token be a padding token
+            # would skip, cause eos_token_id & pad_token_id is None
             if eos_token_id is not None:
                 if pad_token_id is None:
                     raise ValueError("If `eos_token_id` is defined, make sure that `pad_token_id` is defined.")
@@ -164,7 +148,8 @@ class WaveletGenerationMixin(GenerationMixin):
             next_tokens = next_tokens.reshape(batch_size, -1, self.config.input_size)
             horizon_length = next_tokens.shape[1]
 
-            # shape: [batch_sz, token_num, token_len] -> [batch_sz, token_num + horizon_len, token_len]
+            # simply concat input_ids & next_tokens to update input_ids
+            # shape: [batch_sz, token_num, patch_size * 2] -> [batch_sz, token_num + horizon_len, patch_size * 2]
             input_ids = torch.cat([input_ids, next_tokens], dim=-2)
             
             if streamer is not None:
@@ -173,8 +158,6 @@ class WaveletGenerationMixin(GenerationMixin):
             model_kwargs = self._update_model_kwargs_for_generation(
                 outputs,
                 model_kwargs,
-                group_ids = group_ids,
-                target_idx = target_idx,
                 horizon_length=horizon_length,
                 is_encoder_decoder=self.config.is_encoder_decoder,
             )
@@ -204,8 +187,6 @@ class WaveletGenerationMixin(GenerationMixin):
             self,
             outputs: ModelOutput,
             model_kwargs: Dict[str, Any],
-            group_ids: torch.Tensor,
-            target_idx: Optional[Tuple[int]] = None,
             horizon_length: int = 1,
             is_encoder_decoder: bool = False
     ) -> Dict[str, Any]:
@@ -226,27 +207,9 @@ class WaveletGenerationMixin(GenerationMixin):
             # shape: [batch_sz, token_num] -> [batch_sz, token_num + horizon_len]
             if "attention_mask" in model_kwargs:
                 attention_mask = model_kwargs["attention_mask"]
-                attention_mask = torch.cat(
-                    [attention_mask, attention_mask.new_ones((attention_mask.shape[0], horizon_length))], dim=-1
-                )
-
-                # mask new token of non-target channel
-                if target_idx is not None:
-                    _, _, counts = group_ids.unique_consecutive(return_inverse=True, return_counts=True)
-                    group_pos = torch.arange(len(group_ids), device=group_ids.device) - torch.repeat_interleave(
-                        torch.cumsum(counts, 0) - counts, counts
-                    )
-                    is_target = (group_pos >= target_idx[0]) & (group_pos < target_idx[1])
-                    attention_mask[~is_target, -horizon_length:] = 0
-        
+                attention_mask = torch.cat([attention_mask, attention_mask.new_ones((attention_mask.shape[0], horizon_length))], dim=-1)
                 model_kwargs["attention_mask"] = attention_mask
         else:
-            # update decoder attention mask
-            if "decoder_attention_mask" in model_kwargs:
-                decoder_attention_mask = model_kwargs["decoder_attention_mask"]
-                model_kwargs["decoder_attention_mask"] = torch.cat(
-                    [decoder_attention_mask, decoder_attention_mask.new_ones((decoder_attention_mask.shape[0], horizon_length))],
-                    dim=-1,
-                )
+            raise ValueError("WaveletMoE is decoder-only")
 
         return model_kwargs

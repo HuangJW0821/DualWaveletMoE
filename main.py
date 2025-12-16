@@ -75,7 +75,7 @@ if __name__ == "__main__":
         "--global_batch_size", type=int, default=16, help="global batch size"
     )
     parser.add_argument(
-        "--micro_batch_size", type=int, default=8, help="micro batch size per device"
+        "--micro_batch_size", type=int, default=4, help="micro batch size per device"
     )
 
     parser.add_argument(
@@ -145,7 +145,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataloader_num_workers",
         type=int,
-        default=8,
+        default=4,
         help="number of workers for dataloader",
     )
 

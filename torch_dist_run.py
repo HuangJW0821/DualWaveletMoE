@@ -50,7 +50,7 @@ def obtain_dist_env_dict():
     rank = os.getenv('RANK') or 0
     master_addr = os.getenv('MASTER_ADDR') or 'localhost'
     master_port = os.getenv('MASTER_PORT') or 9898
-    master_port = 9895
+    master_port = 9897
 
     if master_addr is None:
         return None
