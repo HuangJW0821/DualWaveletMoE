@@ -8,7 +8,7 @@ from typing import Dict, Tuple, Optional
 import numpy as np
 import matplotlib.pyplot as plt
 
-from DualWaveletMoE.wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesWindowedSingleDataset
+from wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesWindowedSingleDataset
 from wavelet_moe.datasets.wavelet_data_collator import WaveletTimeSeriesDataCollator
 from wavelet_moe.evaluation.eval_models import ModelForEvaluation
 from wavelet_moe.evaluation.eval_metrics import MAEMetric, MSEMetric
@@ -97,7 +97,7 @@ class EvaluationRunner():
         acc_count = 0
         with torch.no_grad():
             for i, batch in tqdm(enumerate(dataloader), desc=f"{dataset.dataset_name}-[{len(dataset)}]"):
-                group_ids, preds, labels = self.model.generate(batch, target_idx = target_idx)
+                preds, labels = self.model.generate(batch)
 
                 if target_idx is not None:
                     _, _, counts = group_ids.unique_consecutive(return_inverse=True, return_counts=True)
@@ -123,16 +123,16 @@ class EvaluationRunner():
             "avg_exmaple_loss": {},
             "avg_sequence_part_loss": {},
             "avg_coeff_part_loss": {},
-            "avg_idwt_reconstruct_loss": {},
-            "avg_idwt_pred_seq_loss": {}
+            # "avg_idwt_reconstruct_loss": {},
+            # "avg_idwt_pred_seq_loss": {}
         }
 
         for metric in metric_list:
             dataset_metrics["avg_exmaple_loss"][metric.name] = (metric.exmaple_loss / acc_count).tolist()
             dataset_metrics["avg_sequence_part_loss"][metric.name] = (metric.sequence_part_loss / acc_count * 2).tolist()
             dataset_metrics["avg_coeff_part_loss"][metric.name] = (metric.coeff_part_loss / acc_count * 2).tolist()
-            dataset_metrics["avg_idwt_reconstruct_loss"][metric.name] = (metric.idwt_reconstruct_loss / acc_count * 2).tolist()
-            dataset_metrics["avg_idwt_pred_seq_loss"][metric.name] = (metric.idwt_pred_seq_loss / acc_count * 2).tolist()
+            # dataset_metrics["avg_idwt_reconstruct_loss"][metric.name] = (metric.idwt_reconstruct_loss / acc_count * 2).tolist()
+            # dataset_metrics["avg_idwt_pred_seq_loss"][metric.name] = (metric.idwt_pred_seq_loss / acc_count * 2).tolist()
 
         return {
             "dataset_metrics": dataset_metrics,
@@ -182,8 +182,8 @@ class EvaluationRunner():
                 "avg_exmaple_loss": {},
                 "avg_sequence_part_loss": {},
                 "avg_coeff_part_loss": {},
-                "avg_idwt_reconstruct_loss": {},
-                "avg_idwt_pred_seq_loss": {}
+                # "avg_idwt_reconstruct_loss": {},
+                # "avg_idwt_pred_seq_loss": {}
             },
             "per_dataset_results": per_dataset_results
         }
@@ -193,8 +193,8 @@ class EvaluationRunner():
             final_eval_result["benchmark_result"]["avg_exmaple_loss"][metric_name] = ( sum(metric[i].exmaple_loss for metric in metric_lists) / acc_count ).tolist()
             final_eval_result["benchmark_result"]["avg_sequence_part_loss"][metric_name] = ( sum(metric[i].sequence_part_loss for metric in metric_lists) / acc_count * 2 ).tolist()
             final_eval_result["benchmark_result"]["avg_coeff_part_loss"][metric_name] = ( sum(metric[i].coeff_part_loss for metric in metric_lists) / acc_count * 2 ).tolist()
-            final_eval_result["benchmark_result"]["avg_idwt_reconstruct_loss"][metric_name] = ( sum(metric[i].idwt_reconstruct_loss for metric in metric_lists) / acc_count * 2 ).tolist()
-            final_eval_result["benchmark_result"]["avg_idwt_pred_seq_loss"][metric_name] = ( sum(metric[i].idwt_pred_seq_loss for metric in metric_lists) / acc_count * 2 ).tolist()
+            # final_eval_result["benchmark_result"]["avg_idwt_reconstruct_loss"][metric_name] = ( sum(metric[i].idwt_reconstruct_loss for metric in metric_lists) / acc_count * 2 ).tolist()
+            # final_eval_result["benchmark_result"]["avg_idwt_pred_seq_loss"][metric_name] = ( sum(metric[i].idwt_pred_seq_loss for metric in metric_lists) / acc_count * 2 ).tolist()
 
         with open(os.path.join(self.output_path, f"{self.file_name}.txt"), "w", encoding="utf-8") as f:
             json.dump(final_eval_result, f, ensure_ascii=False, indent=4)
