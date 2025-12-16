@@ -80,7 +80,11 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         batch_loss_masks = torch.tensor([])
 
         for feature in features:
-            batch_data = torch.cat([batch_data, feature['data']], dim=0)
+            feature_data = feature["data"]
+            if feature_data.dim() == 2 and feature_data.shape[0] > 1:
+                idx = 0
+                feature_data = feature_data[idx:idx + 1]  # [1, L]
+            batch_data = torch.cat([batch_data, feature_data], dim=0)
 
             loss_mask = feature['loss_mask']
             if len(loss_mask.shape)==1:

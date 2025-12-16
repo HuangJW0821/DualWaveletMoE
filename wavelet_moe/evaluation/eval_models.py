@@ -65,7 +65,9 @@ class WaveletMoEForEvaluation(ModelForEvaluation):
         input_length = self.input_length
         prediction_length = self.prediction_length
 
-        input_ids = batch["input_ids"]
+        # input_ids = batch["input_ids"]
+        input_ids = (torch.cat((batch["time_seq"], batch["wavelet_seq"]), dim=2)).to(device)
+
         seq_len = input_ids.shape[1]
 
         if input_length + prediction_length > seq_len:
