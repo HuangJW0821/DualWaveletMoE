@@ -57,61 +57,6 @@ def _get_unpad_data(attention_mask):
     )
 
 
-# Copied from transformers.models.llama.modeling_llama.repeat_kv
-def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
-    """
-    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
-    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
-
-    Repeat key value, use when num_key_value_head < num_attention_head situation like Grouped Query Attn or Multi-Query Attn,
-    so that we can storage lesser key_value_head (reduce KV matrix's needed params)
-    """
-    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
-    if n_rep == 1:
-        return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
-    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
-
-
-# Copied from transformers.models.llama.modeling_llama.rotate_half
-def rotate_half(x):
-    """Rotates half the hidden dims of the input."""
-    # (x, y) → (-y, x), ie rotate in imagine number's space
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2:]
-    return torch.cat((-x2, x1), dim=-1)
-
-
-# Copied from transformers.models.mistral.modeling_mistral.apply_rotary_pos_emb
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids, unsqueeze_dim=1):
-    """Applies Rotary Position Embedding to the query and key tensors,
-      therefore encode relative position relations between tokens.
-
-    Args:
-        q (`torch.Tensor`): The query tensor.
-        k (`torch.Tensor`): The key tensor.
-        cos (`torch.Tensor`): The cosine part of the rotary embedding.
-        sin (`torch.Tensor`): The sine part of the rotary embedding.
-        position_ids (`torch.Tensor`):
-            The position indices of the tokens corresponding to the query and key tensors. For example, this can be
-            used to pass offsetted position ids when working with a KV-cache.
-        unsqueeze_dim (`int`, *optional*, defaults to 1):
-            The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
-            sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
-            that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
-            k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
-            cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
-            the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
-    Returns:
-        `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
-    """
-    cos = cos[position_ids].unsqueeze(unsqueeze_dim)    # choose which index to rotate & expand into new shape
-    sin = sin[position_ids].unsqueeze(unsqueeze_dim)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
-    return q_embed, k_embed
-
-
 class WaveletMoeEmbedderBlock(torch.nn.Module):
     """
     Use a mlp layer to embedding the input ids.
@@ -358,16 +303,23 @@ class WaveletMoeSparseExpertsBlock(torch.nn.Module):
         # ie forward thorugh selected experts
         for expert_idx in range(self.num_experts):
             expert_layer = self.routed_experts[expert_idx]
+
+            # top_x shape [token_num_routed_to_expert, ]
             idx, top_x = torch.where(expert_mask[expert_idx])
 
             # Index the correct hidden states and compute the expert hidden state for
             # the current expert. We need to make sure to multiply the output hidden
             # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+            # shape [token_num_routed_to_expert, hidden_sz]
             current_state = hidden_states[None, top_x].reshape(-1, hidden_sz)
+            
+            # forward thorugh expert & mul routing weight
+            # shape [token_num_routed_to_expert, hidden_sz]
             current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
 
             # However `index_add_` only support torch tensors for indexing so we'll use
             # the `top_x` tensor here.
+            # shape [token_num, hidden_sz]
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
 
         # forward through shared expert
@@ -466,10 +418,7 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
         self.attention_dropout = config.attention_dropout
 
         if (self.head_dim * self.num_heads) != self.hidden_size:
-            raise ValueError(
-                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-                f" and `num_heads`: {self.num_heads})."
-            )
+            raise ValueError(f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size} and `num_heads`: {self.num_heads}).")
         
         # projection layers
         self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=True)
@@ -482,6 +431,59 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
             max_position_embeddings=self.max_position_embeddings,
             base=self.rope_theta,
         )
+    
+    # Copied from transformers.models.llama.modeling_llama.rotate_half
+    def _rotate_half(self, x):
+        """Rotates half the hidden dims of the input."""
+        # (x, y) → (-y, x), ie rotate in imagine number's space
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2:]
+        return torch.cat((-x2, x1), dim=-1)
+
+
+    # Copied from transformers.models.mistral.modeling_mistral.apply_rotary_pos_emb
+    def _apply_rotary_pos_emb(self, q, k, cos, sin, position_ids, unsqueeze_dim=1):
+        """Applies Rotary Position Embedding to the query and key tensors,
+        therefore encode relative position relations between tokens.
+
+        Args:
+            q (`torch.Tensor`): The query tensor.
+            k (`torch.Tensor`): The key tensor.
+            cos (`torch.Tensor`): The cosine part of the rotary embedding.
+            sin (`torch.Tensor`): The sine part of the rotary embedding.
+            position_ids (`torch.Tensor`):
+                The position indices of the tokens corresponding to the query and key tensors. For example, this can be
+                used to pass offsetted position ids when working with a KV-cache.
+            unsqueeze_dim (`int`, *optional*, defaults to 1):
+                The 'unsqueeze_dim' argument specifies the dimension along which to unsqueeze cos[position_ids] and
+                sin[position_ids] so that they can be properly broadcasted to the dimensions of q and k. For example, note
+                that cos[position_ids] and sin[position_ids] have the shape [batch_size, seq_len, head_dim]. Then, if q and
+                k have the shape [batch_size, heads, seq_len, head_dim], then setting unsqueeze_dim=1 makes
+                cos[position_ids] and sin[position_ids] broadcastable to the shapes of q and k. Similarly, if q and k have
+                the shape [batch_size, seq_len, heads, head_dim], then set unsqueeze_dim=2.
+        Returns:
+            `tuple(torch.Tensor)` comprising of the query and key tensors rotated using the Rotary Position Embedding.
+        """
+        cos = cos[position_ids].unsqueeze(unsqueeze_dim)    # choose which index to rotate & expand into new shape
+        sin = sin[position_ids].unsqueeze(unsqueeze_dim)
+        q_embed = (q * cos) + (self._rotate_half(q) * sin)
+        k_embed = (k * cos) + (self._rotate_half(k) * sin)
+        return q_embed, k_embed
+
+    # Copied from transformers.models.llama.modeling_llama.repeat_kv
+    def _repeat_kv(self, hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+        """
+        This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+        num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+
+        Repeat key value, use when num_key_value_head < num_attention_head situation like Grouped Query Attn or Multi-Query Attn,
+        so that we can storage lesser key_value_head (reduce KV matrix's needed params)
+        """
+        batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+        if n_rep == 1:
+            return hidden_states
+        hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+        return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
     
     def _select_topk_kv(
         self, 
@@ -499,8 +501,12 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
          causal_attn_mask: shape `[batch_sz, head_num, q_len, kv_len]
         """
 
-        topk = self.config.topk_kv
-        bsz, head_num, q_len, kv_len = attn_weights.shape
+        topk = getattr(self.config, "topk_kv", None)
+
+        if topk is None:
+            raise ValueError(f"`topk_kv` should not be `None` if `config.use_topk_kv == True`")
+
+        _, head_num, _, kv_len = attn_weights.shape
 
         # broadcast causal mask to head_num
         causal_attn_mask = causal_attn_mask.expand(-1, head_num, -1, -1)
@@ -561,12 +567,12 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
         # forward through RoPE layer (only QK states)
         # q,k_states shape unchange
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
+        query_states, key_states = self._apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
 
         # if n_kv_heads != n_heads (when GQA or MQA), reshape k,v_sates  -> [batch_sz, num_heads, kv_len, head_dim]
         # otherwise, keep shape unchange
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
+        key_states = self._repeat_kv(key_states, self.num_key_value_groups)
+        value_states = self._repeat_kv(value_states, self.num_key_value_groups)
 
         # cal attention weights
         # shape [batch_sz, num_heads, q_len, kv_len]
@@ -579,7 +585,7 @@ class WaveletMoeFilteredMHABlock(torch.nn.Module):
         if causal_attn_mask is not None:
 
             if causal_attn_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(f"Time Attention mask should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is {causal_attn_mask.size()}")
+                raise ValueError(f"Self Attention mask should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is {causal_attn_mask.size()}")
             
             if self.config.use_topk_kv:
                 causal_attn_mask = self._select_topk_kv(attn_weights, causal_attn_mask)
@@ -904,13 +910,11 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
 
         # set default param
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
+        output_hidden_states = (output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states)
 
         # check input shapes & devices
         if time_seq is not None and time_seq_embeds is not None:
-            raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
+            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
         elif time_seq is not None and wavelet_seq is not None:
             if time_seq.device != wavelet_seq.device:
                 wavelet_seq.to(time_seq.device)
@@ -920,7 +924,7 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
                 wavelet_seq_embeds.to(time_seq_embeds.device)
             batch_size, token_num, _ = time_seq_embeds.shape
         else:
-            raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
+            raise ValueError("You have to specify either input_ids or inputs_embeds")
 
         # generate position_ids for RoPE
         if position_ids is None:
@@ -968,7 +972,6 @@ class WaveletMoeModel(WaveletMoePreTrainedModel):
             if output_hidden_states:
                 all_time_hidden_states += (time_hidden_states,)
                 all_wavelet_hidden_states += (wavelet_hidden_states, )
-
 
             # forward setting: load gradient checkpoint or normal forwarding
             if self.gradient_checkpointing and self.training:
@@ -1235,11 +1238,14 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
                         break
                     else:
                         horizon_length = h
-            lm_head = self.lm_heads[self.horizon_length_map[horizon_length]]
-            predictions = lm_head(hidden_states)
+
+            output_head = self.dual_output_heads[self.horizon_length_map[horizon_length]]
+
+            time_predictions, wavelet_predictions = output_head(time_hidden_state, wavelet_hidden_state)
 
             if horizon_length > max_horizon_length:
-                predictions = predictions[:, :, :max_horizon_length, :]
+                time_predictions = time_predictions[:, :, :max_horizon_length, :]
+                wavelet_predictions = wavelet_predictions[:, :, :max_horizon_length, :]
 
         return WaveletMoeCausalLMOutputWithPast(
             loss = loss,
@@ -1433,16 +1439,19 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
         return load_balancing_loss
 
 
-    # TODO: merge loss_masks & attn_mask here.
     def prepare_inputs_for_generation(
-        self, input_ids, group_ids, attention_mask=None, inputs_embeds=None, **kwargs
+        self, 
+        input_ids: torch.FloatTensor, 
+        attention_mask: Optional[torch.Tensor] = None, 
+        inputs_embeds: Optional[torch.FloatTensor] = None, 
+        **kwargs
     ):
         """
-        Data format prepration for auto-regression input. Including KV Cache management, position ID gengeration and
-        attention mask clipping, ect. 
+        Data format prepration for auto-regression input. 
+        Include `position_ids` gengerate, `attention_mask` clipping, slicing `input_ids` & `input_embeds` and ect. 
 
         Call before every forward during inferecing.
-        During inference: predict() -> _greedy_search() -> prepare_inputs_for_generation()
+        During inference: generate() -> _greedy_search() -> prepare_inputs_for_generation() -> _greedy_search() -> _update_model_kwargs_for_generation()
         """
 
         position_ids = kwargs.get("position_ids", None)
@@ -1451,19 +1460,22 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
             position_ids = attention_mask.long().cumsum(-1) - 1
             position_ids.masked_fill_(attention_mask == 0, 1)
 
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        # since `input_ids` & `input_embeds` are concat of time & wavelet sequence data, slice it before forward()
         if inputs_embeds is not None:
-            logger.info('Use input_embedding')
-            model_inputs = {"inputs_embeds": inputs_embeds}
+            raise RuntimeError(f"`input_embeds` is not supported as a model input.")
         else:
-            model_inputs = {"input_ids": input_ids}
+            patch_size = input_ids.shape[2] // 2
+            model_inputs = {
+                "time_seq": input_ids[:, :, : patch_size],
+                "wavelet_seq": input_ids[:, :, patch_size :]
+            }
 
         model_inputs.update(
             {
                 "position_ids": position_ids,
-                "attention_mask": attention_mask,
-                "group_ids": group_ids
+                "attention_mask": attention_mask
             }
         )
+
         return model_inputs
 
