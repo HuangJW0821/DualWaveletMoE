@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 from wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesWindowedSingleDataset
 from wavelet_moe.datasets.wavelet_data_collator import WaveletTimeSeriesDataCollator
-from wavelet_moe.evaluation.eval_models import ModelForEvaluation
+from wavelet_moe.evaluation.eval_models import ModelForEvaluation, WaveletMoEForEvaluation
 from wavelet_moe.evaluation.eval_metrics import MAEMetric, MSEMetric
 from wavelet_moe.evaluation.prediction_result_painter import PredictionResultPainter
 
@@ -29,8 +29,7 @@ class EvaluationRunner():
         level: int = 2, 
         normalization_method: str = 'zero',
         num_worker: int = 16,
-        draw_prediciton_result: bool = True,
-        predict_target_only: bool = False
+        draw_prediciton_result: bool = True
     ):
         if not os.path.exists(root_path):
             raise ValueError(f"Path not exists: [{root_path}]!")
@@ -40,6 +39,8 @@ class EvaluationRunner():
             raise ValueError(f"Both input_length & predict_length should larger than 0.")
 
         self.model = model
+        self.is_wavelet_moe = isinstance(model, WaveletMoEForEvaluation)
+
         self.root_path = root_path
         self.output_path = output_path
 
@@ -52,7 +53,6 @@ class EvaluationRunner():
         self.patch_size = patch_size
         self.num_worker = num_worker
         self.draw_prediciton_result = draw_prediciton_result
-        self.predict_target_only = predict_target_only
 
         self.data_collator = WaveletTimeSeriesDataCollator(
             batch_size = batch_size,
@@ -66,20 +66,16 @@ class EvaluationRunner():
 
         self.file_name = f"BENCHMARK[{self.benchmark_name}]_[{self.input_length} to {self.predict_length} tokens]"
 
-        self.painter = PredictionResultPainter(
-            output_path = self.output_path,
-            file_name = self.file_name,
-            input_length = self.input_length,
-            predict_length = self.predict_length,
-            patch_size = self.patch_size,
-            predict_target_only = self.predict_target_only
-        )
+        if draw_prediciton_result:
+            self.painter = PredictionResultPainter(
+                output_path = self.output_path,
+                file_name = self.file_name,
+                input_length = self.input_length,
+                predict_length = self.predict_length,
+                patch_size = self.patch_size,
+            )
 
     def _eval_one_dataset(self, dataset: TimeSeriesWindowedSingleDataset):
-        if self.predict_target_only:
-            target_idx = (dataset.target_start_idx, dataset.target_end_idx)
-        else:
-            target_idx = None
 
         dataloader = DataLoader(
             dataset = dataset,
@@ -94,56 +90,46 @@ class EvaluationRunner():
             MAEMetric(name='mae'),
         ]
 
-        acc_count = 0
+        timestep_cnt = 0
         with torch.no_grad():
             for i, batch in tqdm(enumerate(dataloader), desc=f"{dataset.dataset_name}-[{len(dataset)}]"):
                 preds, labels = self.model.generate(batch)
 
-                if target_idx is not None:
-                    _, _, counts = group_ids.unique_consecutive(return_inverse=True, return_counts=True)
-                    group_pos = torch.arange(len(group_ids), device=group_ids.device) - torch.repeat_interleave(torch.cumsum(counts, 0) - counts, counts)
-                    is_target = (group_pos >= target_idx[0]) & (group_pos < target_idx[1])
-                    target_preds, target_labels = preds[is_target, :], labels[is_target, :]
-                else:
-                    target_preds, target_labels = preds, labels
-
                 for metric in metric_list:
-                    metric.push(target_preds, target_labels)
+                    metric.push(preds, labels)
 
-                acc_count += target_preds.numel()
+                timestep_cnt += preds.numel()
 
                 if i==100:
                     break
                 
                 if self.draw_prediciton_result and i%25==0:
                     batch_inputs, batch_labels, batch_preds = self.model.prepare_items_for_plt(batch, preds)
-                    self.painter.draw_batch_prediction_result(dataset.dataset_name, group_ids, batch_inputs, batch_labels, batch_preds, i, target_idx)
+                    self.painter.draw_batch_prediction_result(dataset.dataset_name, batch_inputs, batch_labels, batch_preds, i)
         
-        dataset_metrics = {
-            "avg_exmaple_loss": {},
-            "avg_sequence_part_loss": {},
-            "avg_coeff_part_loss": {},
-            # "avg_idwt_reconstruct_loss": {},
-            # "avg_idwt_pred_seq_loss": {}
-        }
+        if self.is_wavelet_moe:
+            timestep_cnt /= 2
+
+        dataset_metrics = {"time_seq_loss": {}}
 
         for metric in metric_list:
-            dataset_metrics["avg_exmaple_loss"][metric.name] = (metric.exmaple_loss / acc_count).tolist()
-            dataset_metrics["avg_sequence_part_loss"][metric.name] = (metric.sequence_part_loss / acc_count * 2).tolist()
-            dataset_metrics["avg_coeff_part_loss"][metric.name] = (metric.coeff_part_loss / acc_count * 2).tolist()
-            # dataset_metrics["avg_idwt_reconstruct_loss"][metric.name] = (metric.idwt_reconstruct_loss / acc_count * 2).tolist()
-            # dataset_metrics["avg_idwt_pred_seq_loss"][metric.name] = (metric.idwt_pred_seq_loss / acc_count * 2).tolist()
+            dataset_metrics["time_seq_loss"][metric.name] = (metric.time_seq_loss / timestep_cnt).tolist()
+
+        if self.is_wavelet_moe:
+            dataset_metrics["wavelet_seq_loss"] = {}
+            for metric in metric_list:
+                dataset_metrics["wavelet_seq_loss"][metric.name] = (metric.wavelet_seq_loss / timestep_cnt).tolist()
 
         return {
             "dataset_metrics": dataset_metrics,
             "metric_list": metric_list,
-            "acc_count": acc_count
+            "timestep_cnt": timestep_cnt
         }
 
     def evaluate(self):
         per_dataset_results = {}
         metric_lists = []
-        acc_count = 0.0
+        timestep_cnt = 0
 
         for dataset_name in tqdm(self.dataset_names):
 
@@ -169,7 +155,7 @@ class EvaluationRunner():
             per_dataset_results[dataset_name] = result["dataset_metrics"]
             metric_lists.append(result["metric_list"])
 
-            acc_count += result["acc_count"]
+            timestep_cnt += result["timestep_cnt"]
         
         final_eval_result = {
             "model_path": self.model.model_path,
@@ -177,24 +163,21 @@ class EvaluationRunner():
             "input_length": self.input_length,
             "predict_length": self.predict_length,
             "batch_size": self.batch_size,
-            "predict_target_only": self.predict_target_only,
             "benchmark_result": {
-                "avg_exmaple_loss": {},
-                "avg_sequence_part_loss": {},
-                "avg_coeff_part_loss": {},
-                # "avg_idwt_reconstruct_loss": {},
-                # "avg_idwt_pred_seq_loss": {}
+                "time_seq_loss": {},
             },
             "per_dataset_results": per_dataset_results
         }
 
         for i in range(len(metric_lists[0])):
             metric_name = metric_lists[0][i].name
-            final_eval_result["benchmark_result"]["avg_exmaple_loss"][metric_name] = ( sum(metric[i].exmaple_loss for metric in metric_lists) / acc_count ).tolist()
-            final_eval_result["benchmark_result"]["avg_sequence_part_loss"][metric_name] = ( sum(metric[i].sequence_part_loss for metric in metric_lists) / acc_count * 2 ).tolist()
-            final_eval_result["benchmark_result"]["avg_coeff_part_loss"][metric_name] = ( sum(metric[i].coeff_part_loss for metric in metric_lists) / acc_count * 2 ).tolist()
-            # final_eval_result["benchmark_result"]["avg_idwt_reconstruct_loss"][metric_name] = ( sum(metric[i].idwt_reconstruct_loss for metric in metric_lists) / acc_count * 2 ).tolist()
-            # final_eval_result["benchmark_result"]["avg_idwt_pred_seq_loss"][metric_name] = ( sum(metric[i].idwt_pred_seq_loss for metric in metric_lists) / acc_count * 2 ).tolist()
+            final_eval_result["benchmark_result"]["time_seq_loss"][metric_name] = ( sum(metric[i].time_seq_loss for metric in metric_lists) / timestep_cnt ).tolist()
+        
+        if self.is_wavelet_moe:
+            final_eval_result["benchmark_result"]["wavelet_seq_loss"] = {}
+            for i in range(len(metric_lists[0])):
+                metric_name = metric_lists[0][i].name  
+                final_eval_result["benchmark_result"]["wavelet_seq_loss"][metric_name] = ( sum(metric[i].wavelet_seq_loss for metric in metric_lists) / timestep_cnt ).tolist()
 
         with open(os.path.join(self.output_path, f"{self.file_name}.txt"), "w", encoding="utf-8") as f:
             json.dump(final_eval_result, f, ensure_ascii=False, indent=4)

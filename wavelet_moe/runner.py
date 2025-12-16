@@ -186,8 +186,8 @@ class WaveletMoeRunner:
         # Training
         # load dataset & data collator
         # dataset = TimeSeriesMultipleDataset(root_path = train_config["data_path"])
-        train_dataset, val_dataset = self._prepare_chronos_dataset(train_config)
-        # train_dataset, val_dataset = self._prepare_single_dataset(train_config)
+        # train_dataset, val_dataset = self._prepare_chronos_dataset(train_config)
+        train_dataset, val_dataset = self._prepare_single_dataset(train_config)
 
         data_collator = WaveletTimeSeriesDataCollator(
             batch_size = micro_batch_size,

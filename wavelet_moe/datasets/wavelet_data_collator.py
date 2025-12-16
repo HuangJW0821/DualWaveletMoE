@@ -79,18 +79,6 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         batch_data = torch.tensor([])
         batch_loss_masks = torch.tensor([])
 
-        # for feature in features:
-        #     feature_data = feature["data"]
-        #     if feature_data.dim() == 2 and feature_data.shape[0] > 1:
-        #         idx = 0
-        #         feature_data = feature_data[idx:idx + 1]  # [1, L]
-        #     batch_data = torch.cat([batch_data, feature_data], dim=0)
-        #
-        #     loss_mask = feature['loss_mask']
-        #     if len(loss_mask.shape)==1:
-        #         loss_mask = loss_mask.unsqueeze(0)
-        #     batch_loss_masks = torch.cat([batch_loss_masks, loss_mask], dim=0)
-
         for feature in features:
             if batch_data.shape[0] >= self.batch_size:
                 break
@@ -109,7 +97,6 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
                 loss_mask = loss_mask[:remaining]
             batch_data = torch.cat([batch_data, feature_data], dim=0)
             batch_loss_masks = torch.cat([batch_loss_masks, loss_mask], dim=0)
-
 
         # process batch data: scaling & wavelet dwt tokenize
         # shape: (batch_size, seq_len) -> (batch_size, seq_len*2)

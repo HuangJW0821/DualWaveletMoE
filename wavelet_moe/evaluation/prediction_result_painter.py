@@ -20,15 +20,13 @@ class PredictionResultPainter:
         file_name: str,
         input_length: int,
         predict_length: int,
-        patch_size: int = 8,
-        predict_target_only: bool = True
+        patch_size: int = 8
     ):
         self.output_path = output_path
         self.file_name = file_name
         self.input_length = input_length
         self.predict_length = predict_length
         self.patch_size = patch_size
-        self.predict_target_only = predict_target_only
 
     def _draw_group_prediction_result(
         self, 
@@ -65,74 +63,35 @@ class PredictionResultPainter:
             os.makedirs(output_path)
 
         fig.tight_layout()
-        fig.suptitle(f"Dataset[{dataset_name}]_TargetOnly[{self.predict_target_only}]_Batch[{batch_idx}]_Example[{group_idx}]", fontsize=16, fontweight='bold')  
+        fig.suptitle(f"Dataset[{dataset_name}]_Batch[{batch_idx}]_Example[{group_idx}]", fontsize=16, fontweight='bold')  
         fig.savefig(os.path.join(output_path, f"Batch[{batch_idx}]_Example[{group_idx}].png"))
         plt.close()
 
     def draw_batch_prediction_result(
         self, 
         dataset_name: str, 
-        group_ids: torch.Tensor, 
         batch_inputs: np.ndarray, 
         batch_labels: np.ndarray, 
         batch_preds: np.ndarray, 
-        batch_idx: int,
-        target_idx: Optional[Tuple[int]] = None,
-    ):
-        group_ids = group_ids.cpu()
-        group_start_pos = torch.cat([torch.tensor([0]), torch.nonzero(group_ids[1:] != group_ids[:-1], as_tuple=False).flatten() + 1])
-        group_nums = len(group_start_pos)
-        
-        for group_idx in range(group_nums):
-            start = int(group_start_pos[group_idx])
-            end = int(group_start_pos[group_idx+1]) if group_idx+1 < group_nums else len(group_ids)
-        
-            group_inputs = batch_inputs[start : end, :]
-            group_labels = batch_labels[start : end, :]
-            group_preds = batch_preds[start : end, :]
-
-            self._draw_group_prediction_result(dataset_name, group_inputs, group_labels, group_preds, batch_idx, group_idx, target_idx)
-    
-    def _draw_group_prediction_result_for_pred_list(
-        self, 
-        dataset_name: str, 
-        group_inputs: np.ndarray, 
-        group_labels: np.ndarray, 
-        group_preds_list: List[np.ndarray], 
-        batch_idx: int, 
-        group_idx: int,
-        model_name_list: List[str],
-        color_name_list: List[str],
-        target_idx: Optional[Tuple[int]] = None
+        batch_idx: int
     ):
         x_input = np.asarray(list(range(self.input_length * self.patch_size)))
         x_label = np.asarray(list(range(self.input_length * self.patch_size, (self.input_length + self.predict_length) * self.patch_size)))
         
-        group_size = group_inputs.shape[0]
+        batch_size = batch_inputs.shape[0]
 
-        figsize = (48, group_size*6)
-        fig, axes = plt.subplots(nrows = group_size, ncols = 1, figsize = figsize)
+        figsize = (48, batch_size*6)
+        fig, axes = plt.subplots(nrows = batch_size, ncols = 1, figsize = figsize)
 
-        if group_size == 1:
+        if batch_size == 1:
             axes = np.array([axes])
         else:
             axes = np.array(axes).reshape(-1)
 
-        for i in range(group_size):
-            axes[i].plot(x_input, group_inputs[i], c='black', label='Input')
-            
-            if not (target_idx is not None and not (target_idx[0] <= i and i < target_idx[1])):
-                axes[i].plot(x_label, group_labels[i], c='grey', label='Label')
-
-                for model_index in range(len(group_preds_list)):
-                    axes[i].plot(
-                        x_label, 
-                        group_preds_list[model_index][i], 
-                        c = color_name_list[model_index], 
-                        label = model_name_list[model_index],
-                        alpha = 0.5,
-                    )
-            
+        for i in range(batch_size):
+            axes[i].plot(x_input, batch_inputs[i], c='black', label='input')
+            axes[i].plot(x_label, batch_labels[i], c='grey', label='label')
+            axes[i].plot(x_label, batch_preds[i], c='red', label='prediction')
             axes[i].legend()
 
         output_path = os.path.join(self.output_path, f"{self.file_name}_examples", dataset_name)
@@ -140,45 +99,9 @@ class PredictionResultPainter:
             os.makedirs(output_path)
 
         fig.tight_layout()
-        fig.suptitle(f"Dataset[{dataset_name}]_TargetOnly[{self.predict_target_only}]_Batch[{batch_idx}]_Example[{group_idx}]", fontsize=16, fontweight='bold')  
-        fig.savefig(os.path.join(output_path, f"Batch[{batch_idx}]_Example[{group_idx}].png"))
+        fig.suptitle(f"Dataset[{dataset_name}]_Batch[{batch_idx}]", fontsize=16, fontweight='bold')  
+        fig.savefig(os.path.join(output_path, f"Batch[{batch_idx}].png"))
         plt.close()
-
-    def draw_batch_prediction_result_for_pred_list(
-        self, 
-        dataset_name: str, 
-        group_ids: torch.Tensor, 
-        batch_inputs: np.ndarray, 
-        batch_labels: np.ndarray, 
-        batch_preds_list: List[np.ndarray], 
-        batch_idx: int,
-        model_name_list: List[str],
-        color_name_list: List[str],
-        target_idx: Optional[Tuple[int]] = None
-    ):
-        group_ids = group_ids.cpu()
-        group_start_pos = torch.cat([torch.tensor([0]), torch.nonzero(group_ids[1:] != group_ids[:-1], as_tuple=False).flatten() + 1])
-        group_nums = len(group_start_pos)
-        
-        for group_idx in range(group_nums):
-            start = int(group_start_pos[group_idx])
-            end = int(group_start_pos[group_idx+1]) if group_idx+1 < group_nums else len(group_ids)
-        
-            group_inputs = batch_inputs[start : end, :]
-            group_labels = batch_labels[start : end, :]
-            group_preds_list = [batch_preds[start : end, :] for batch_preds in batch_preds_list]
-
-            self._draw_group_prediction_result_for_pred_list(
-                model_name_list = model_name_list,
-                color_name_list = color_name_list,
-                dataset_name = dataset_name, 
-                group_inputs = group_inputs, 
-                group_labels = group_labels, 
-                group_preds_list = group_preds_list, 
-                batch_idx = batch_idx, 
-                group_idx = group_idx, 
-                target_idx = target_idx
-            )
 
 
 class MultipleModelPredictionResultPainter():
@@ -201,6 +124,7 @@ class MultipleModelPredictionResultPainter():
         num_worker: int = 8,
         predict_target_only: bool = False
     ):
+        raise NotImplementedError("Not implemted for DualWaveletMoE yet")
         if not os.path.exists(root_path):
             raise ValueError(f"Path not exists: [{root_path}]!")
         if not os.path.exists(output_path):

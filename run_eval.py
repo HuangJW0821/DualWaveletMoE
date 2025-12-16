@@ -4,7 +4,7 @@ import os
 import argparse
 
 from wavelet_moe.evaluation.eval_runner import EvaluationRunner
-from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, Chronos2ForEvaluation
+from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation
 
 def main(args):
     local_rank = int(os.getenv('LOCAL_RANK') or 0)
@@ -16,8 +16,8 @@ def main(args):
             input_length = args.input_length,
             prediction_length = args.prediction_length
         )
-    elif "chronos2" in args.model:
-        model = Chronos2ForEvaluation(
+    elif "chronos" in args.model:
+        model = ChronosForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
             input_length = args.input_length,
@@ -40,7 +40,6 @@ def main(args):
         batch_size = args.batch_size,
         num_worker = args.num_worker,
         draw_prediciton_result = args.draw_prediciton_result,
-        predict_target_only = args.predict_target_only
     )
 
     eval_runner.evaluate()
@@ -51,26 +50,26 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model', '-m',
         type=str,
-        default='/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/WaveletMoE_multivariate/logs/uni_50M_syn_from_scratch/checkpoint-50000',
+        default='Maple728/TimeMoE-50M',
         help='Model path'
     )
     parser.add_argument(
         '--dataset_path', '-d',
         type=str,
-        default="/data/home/dataset/wavelet_moe_multivariate/bench/high_low_freq_syn_test",
+        default="/data/home/dataset/gifteval_benchmark_strictly_processed_copy",
         help='Benchmark data path'
     )
     parser.add_argument(
         '--output_path', '-o',
         type=str,
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/WaveletMoE_multivariate/logs/uni_50M_syn_from_scratch/checkpoint-50000",
+        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/timemoe_50M",
         help='Output path'
     )
 
     parser.add_argument(
         '--batch_size', '-b',
         type=int,
-        default=5,
+        default=16,
         help='Batch size of evaluation'
     )
 
@@ -95,22 +94,9 @@ if __name__ == '__main__':
 
     parser.add_argument(
         "--draw_prediciton_result", 
-        default=False,
+        default=True,
         help="draw prediction result of first batch, save in args.output_path"
     )
-
-    parser.add_argument(
-        "--predict_target_only", 
-        action="store_true",
-        help="only predict target variates, dataset should provide info about target var & covariate, " \
-        "otherwise all channels will be consider as target variates"
-    )
-    # parser.add_argument(
-    #     "--predict_target_only", 
-    #     default=True,
-    #     help="only predict target variates, dataset should provide info about target var & covariate, " \
-    #     "otherwise all channels will be consider as target variates"
-    # )
    
     args = parser.parse_args()
 
