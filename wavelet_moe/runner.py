@@ -9,6 +9,7 @@ import torch
 from wavelet_moe.datasets.wavelet_moe_dataset import TimeSeriesSingleDataset, TimeSeriesMultipleDataset
 from wavelet_moe.datasets.dataset_time300B import WaveletMoeMultipleDomainDataset, WaveletMoeWindowDataset, WaveletMoeWindowTensorDataset
 from wavelet_moe.datasets.wavelet_data_collator import WaveletTimeSeriesDataCollator
+from wavelet_moe.datasets.balanced_sampler import MultiDatasetBalancedSampler, DistributedBatchSampler
 from wavelet_moe.models.modeling_wavelet_moe import WaveletMoeForPrediction, WaveletMoeConfig
 from wavelet_moe.trainer.hf_trainer import WaveletMoETrainingArguments, WaveletMoeTrainer
 from wavelet_moe.utils.dist_util import get_world_size
@@ -187,7 +188,10 @@ class WaveletMoeRunner:
         # load dataset & data collator
         # dataset = TimeSeriesMultipleDataset(root_path = train_config["data_path"])
         # train_dataset, val_dataset = self._prepare_chronos_dataset(train_config)
-        train_dataset, val_dataset = self._prepare_single_dataset(train_config)
+        #train_dataset, val_dataset = self._prepare_single_dataset(train_config)
+
+        #use Time-300B dataset
+        train_dataset, val_dataset = self._prepare_time300b_dataset(train_config)
 
         data_collator = WaveletTimeSeriesDataCollator(
             batch_size = micro_batch_size,
@@ -199,13 +203,24 @@ class WaveletMoeRunner:
         )
 
         # init trainer, start training & save result
-        trainer = WaveletMoeTrainer(
+
+        # use balanced sampler or not
+        use_balanced_sampler = bool(train_config.get('use_balanced_sampler', False))
+        TrainerCls = BalancedWaveletMoeTrainer if use_balanced_sampler else WaveletMoeTrainer
+        trainer = TrainerCls(
             model = model,
             args = training_args,
             train_dataset = train_dataset,
             data_collator= data_collator,
             needed_column_names = ["data", "loss_mask"],
         )
+        # trainer = WaveletMoeTrainer(
+        #     model = model,
+        #     args = training_args,
+        #     train_dataset = train_dataset,
+        #     data_collator= data_collator,
+        #     needed_column_names = ["data", "loss_mask"],
+        # )
         trainer.train()
         trainer.save_model()
         log_in_local_rank_0(f'Saving model to {self.output_path}')
@@ -213,7 +228,7 @@ class WaveletMoeRunner:
         return trainer.model
     
 
-    # TODO: Adaption for Time-300B
+    # Adaption for Time-300B
     def _prepare_time300b_dataset(self, config):
         data_path = config["data_path"]
 
@@ -225,14 +240,13 @@ class WaveletMoeRunner:
         stride = window_size
 
         lazy = bool(config.get("lazy_window", False))
-        cache_dir = config.get("dataset_cache_path", None)
+        cache_dir = config.get("cache_dir", None)
         use_cache = bool(config.get("use_dataset_cache", True))
 
         base_ds = WaveletMoeMultipleDomainDataset(
-            data_folder=data_path,
-            normalization_method=None,
-            cache_dir=cache_dir,
-            use_cache=use_cache,
+            root_path=data_path,
+            dataset_cache_path=cache_dir,
+            use_dataset_cache=use_cache,
         )
 
         window_ds = WaveletMoeWindowDataset(
@@ -241,8 +255,8 @@ class WaveletMoeRunner:
             prediction_length=prediction_length,
             stride=stride,
             lazy=False,
-            cache_dir=cache_dir,
-            use_cache=use_cache,
+            dataset_cache_path=cache_dir,
+            use_dataset_cache=use_cache,
         )
 
         train_ds = WaveletMoeWindowTensorDataset(
@@ -261,7 +275,6 @@ class WaveletMoeRunner:
         val_ds = None
 
 
-        # 为均衡采样器暴露子数据集/窗口信息（从 TimeMoEWindowDataset 透传）
         if hasattr(window_ds, "window_list"):
             train_ds.window_list = window_ds.window_list
         if hasattr(window_ds, "num_subsets"):
@@ -328,3 +341,30 @@ def _safe_float(number):
         return None
     else:
         return float(number)
+
+# Balanced sampler trainer
+class BalancedWaveletMoeTrainer(WaveletMoeTrainer):
+    """WaveletMoeTrainer + MultiDatasetBalancedSampler (batch-level balanced sampling)."""
+
+    def get_train_dataloader(self):
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+
+        per_device_bs = int(self.args.per_device_train_batch_size)
+        sampler = MultiDatasetBalancedSampler(
+            dataset=self.train_dataset,
+            batch_size=per_device_bs,
+            shuffle=True,
+            seed=getattr(self.args, "data_seed", None),
+        )
+
+        sampler = DistributedBatchSampler.maybe_wrap(sampler)
+        from torch.utils.data import DataLoader
+        return DataLoader(
+            self.train_dataset,
+            batch_sampler=sampler,
+            collate_fn=self.data_collator,
+            num_workers=int(getattr(self.args, "dataloader_num_workers", 0) or 0),
+            pin_memory=bool(getattr(self.args, "dataloader_pin_memory", True)),
+            persistent_workers=(int(getattr(self.args, "dataloader_num_workers", 0) or 0) > 0),
+        )
