@@ -174,11 +174,11 @@ class WaveletMoeRunner:
         # Training
         # load dataset & data collator
         # dataset = TimeSeriesMultipleDataset(root_path = train_config["data_path"])
-        train_dataset, val_dataset = self._prepare_chronos_dataset(train_config)
+        # train_dataset, val_dataset = self._prepare_chronos_dataset(train_config)
         # train_dataset, val_dataset = self._prepare_single_dataset(train_config)
 
         # #use Time-300B dataset
-        # train_dataset, val_dataset = self._prepare_time300b_dataset(train_config)
+        train_dataset, val_dataset = self._prepare_time300b_dataset(train_config)
 
         data_collator = WaveletTimeSeriesDataCollator(
             batch_size = micro_batch_size,
@@ -193,22 +193,22 @@ class WaveletMoeRunner:
         # init trainer, start training & save result
 
         # use balanced sampler or not
-        # use_balanced_sampler = bool(train_config.get('use_balanced_sampler', False))
-        # TrainerCls = BalancedWaveletMoeTrainer if use_balanced_sampler else WaveletMoeTrainer
-        # trainer = TrainerCls(
-        #     model = model,
-        #     args = training_args,
-        #     train_dataset = train_dataset,
-        #     data_collator= data_collator,
-        #     needed_column_names = ["data", "loss_mask"],
-        # )
-        trainer = WaveletMoeTrainer(
+        use_balanced_sampler = bool(train_config.get('use_balanced_sampler', False))
+        TrainerCls = BalancedWaveletMoeTrainer if use_balanced_sampler else WaveletMoeTrainer
+        trainer = TrainerCls(
             model = model,
             args = training_args,
             train_dataset = train_dataset,
             data_collator= data_collator,
             needed_column_names = ["data", "loss_mask"],
         )
+        # trainer = WaveletMoeTrainer(
+        #     model = model,
+        #     args = training_args,
+        #     train_dataset = train_dataset,
+        #     data_collator= data_collator,
+        #     needed_column_names = ["data", "loss_mask"],
+        # )
         
         trainer.train()
         trainer.save_model()
