@@ -27,7 +27,7 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
     Args:
      batch_size: Number of sequences contained in batch. If the batch contains multiple groups, \
         any part exceeding the *batch_size* will be truncated. The number of groups in the batch is denoted as *group_num*.
-     patch_size: Patch size of sequences, final length of token will be *token_len = patch_size X 2*.
+     patch_size: Patch size of sequences, final length of token will be *token_len = patch_size*.
      wavelet_function: Wavelet function use for DWT.
      signal_extension_mode: Signal extension mode of DWT.
      level: DWT level.

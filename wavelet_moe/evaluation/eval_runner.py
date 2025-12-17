@@ -86,8 +86,8 @@ class EvaluationRunner():
         )
 
         metric_list = [
-            MSEMetric(name='mse'),
-            MAEMetric(name='mae'),
+            MSEMetric(name='mse', patch_size = self.patch_size),
+            MAEMetric(name='mae', patch_size = self.patch_size),
         ]
 
         timestep_cnt = 0

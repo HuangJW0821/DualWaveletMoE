@@ -9,26 +9,29 @@ from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEF
 def main(args):
     local_rank = int(os.getenv('LOCAL_RANK') or 0)
 
+    input_length = args.input_length
+    prediction_length = args.prediction_length
+
     if "TimeMoE" in args.model:
         model = TimeMoEForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
-            input_length = args.input_length,
-            prediction_length = args.prediction_length
+            input_length = input_length,
+            prediction_length = prediction_length,
         )
     elif "chronos" in args.model:
         model = ChronosForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
-            input_length = args.input_length,
-            prediction_length = args.prediction_length
+            input_length = input_length,
+            prediction_length = prediction_length,
         )
     else:
         model = WaveletMoEForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
-            input_length = args.input_length,
-            prediction_length = args.prediction_length
+            input_length = input_length,
+            prediction_length = prediction_length,
         )
 
     eval_runner = EvaluationRunner(
@@ -38,6 +41,7 @@ def main(args):
         input_length = args.input_length,
         predict_length = args.prediction_length,
         batch_size = args.batch_size,
+        patch_size = model.patch_size,  # load patch_size from model wrapper since WaveletMoE migh have dynamic patch_size
         num_worker = args.num_worker,
         draw_prediciton_result = args.draw_prediciton_result,
     )
