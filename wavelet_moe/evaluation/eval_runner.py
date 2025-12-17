@@ -28,6 +28,7 @@ class EvaluationRunner():
         mode: str = "periodization", 
         level: int = 2, 
         normalization_method: str = 'zero',
+        use_per_sample_norm: bool = False,
         num_worker: int = 16,
         draw_prediciton_result: bool = True
     ):
@@ -61,7 +62,7 @@ class EvaluationRunner():
             signal_extension_mode = mode,
             level = level,
             normalization_method = normalization_method,
-            mode = "TEST"
+            use_per_sample_norm = use_per_sample_norm
         )
 
         self.file_name = f"BENCHMARK[{self.benchmark_name}]_[{self.input_length} to {self.predict_length} tokens]"
@@ -86,8 +87,8 @@ class EvaluationRunner():
         )
 
         metric_list = [
-            MSEMetric(name='mse'),
-            MAEMetric(name='mae'),
+            MSEMetric(name='mse', patch_size = self.patch_size),
+            MAEMetric(name='mae', patch_size = self.patch_size),
         ]
 
         timestep_cnt = 0

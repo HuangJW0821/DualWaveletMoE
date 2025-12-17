@@ -10,7 +10,7 @@ if __name__ == "__main__":
         "--data_path",
         "-d",
         type=str,
-        default="/data/home/dataset/time300B",
+        default="/data/home/dataset",
         help="Path to training data. (Folder contains data files, or data file)",
     )
     parser.add_argument(
@@ -50,13 +50,6 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--num_train_epochs", type=float, default=1.0, help="number of training epochs"
-    )
-    parser.add_argument(
-        "--normalization_method",
-        type=str,
-        choices=["none", "zero", "max"],
-        default="zero",
-        help="normalization method for sequence",
     )
 
     parser.add_argument("--seed", type=int, default=9899, help="random seed")
@@ -98,12 +91,12 @@ if __name__ == "__main__":
         "--deepspeed", type=str, default=None, help="DeepSpeed config file path"
     )
 
-    # parser.add_argument(
-    #     "--from_scratch", action="store_true", help="train from scratch"
-    # )
     parser.add_argument(
-        "--from_scratch", default=True, help="train from scratch"
+        "--from_scratch", action="store_true", help="train from scratch"
     )
+    # parser.add_argument(
+    #     "--from_scratch", default=True, help="train from scratch"
+    # )
     parser.add_argument(
         "--save_steps", type=int, default=5000, help="number of steps to save model"
     )
@@ -125,7 +118,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--logging_steps", type=int, default=100, help="number of steps to log"
+        "--logging_steps", type=int, default=10, help="number of steps to log"
     )
     parser.add_argument(
         "--evaluation_strategy",
@@ -148,23 +141,14 @@ if __name__ == "__main__":
         default=4,
         help="number of workers for dataloader",
     )
-
-    parser.add_argument("--patch_size", type=int, default=8)
-    parser.add_argument("--wavelet_function", type=str, default="bior2.2")
-    parser.add_argument("--wavelet_signal_extension_mode", type=str, default="periodization")
-    parser.add_argument("--wavelet_dwt_level", type=int, default=2)
-
-    parser.add_argument("--loss_func", type=str, choices=["huber", "mse"], default="huber")
-    parser.add_argument("--lazy_window",type=bool, default=False, help="whether to use lazy loading for windows")
+    
+    parser.add_argument("--use_lazy_window",type=bool, default=False, help="whether to use lazy loading for windows")
     parser.add_argument("--cache_dir", type=str, default="~/.cache/wavelet_moe", help="directory for caching datasets and models")
-    parser.add_argument("--use_dataset_cache", type=bool, default=True, help="whether to use cached datasets if available")
+    parser.add_argument("--use_dataset_cache", type=bool, default=False, help="whether to use cached datasets if available")
     parser.add_argument("--use_balanced_sampler", type=bool, default=False, help="whether to use balanced sampler for training data")
     args = parser.parse_args()
 
-    if args.normalization_method == "none":
-        args.normalization_method = None
-
-    # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
     runner = WaveletMoeRunner(
         model_path=args.model_path,
@@ -181,7 +165,6 @@ if __name__ == "__main__":
         max_length=args.max_length,
         # stride=args.stride,
         data_path=args.data_path,
-        normalization_method=args.normalization_method,
         micro_batch_size=args.micro_batch_size,
         global_batch_size=args.global_batch_size,
         train_steps=args.train_steps,
@@ -208,13 +191,7 @@ if __name__ == "__main__":
         save_only_model=args.save_only_model,
         save_total_limit=args.save_total_limit,
 
-        patch_size=args.patch_size,
-        wavelet_function=args.wavelet_function,
-        wavelet_signal_extension_mode=args.wavelet_signal_extension_mode,
-        wavelet_dwt_level=args.wavelet_dwt_level,
-
-        loss_func = args.loss_func,
-        lazy_window = args.lazy_window,
+        use_lazy_window = args.use_lazy_window,
         cache_dir = args.cache_dir,
         use_dataset_cache = args.use_dataset_cache,
         use_balanced_sampler = args.use_balanced_sampler,

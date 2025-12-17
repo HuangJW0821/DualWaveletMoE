@@ -9,26 +9,29 @@ from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEF
 def main(args):
     local_rank = int(os.getenv('LOCAL_RANK') or 0)
 
+    input_length = args.input_length
+    prediction_length = args.prediction_length
+
     if "TimeMoE" in args.model:
         model = TimeMoEForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
-            input_length = args.input_length,
-            prediction_length = args.prediction_length
+            input_length = input_length,
+            prediction_length = prediction_length,
         )
     elif "chronos" in args.model:
         model = ChronosForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
-            input_length = args.input_length,
-            prediction_length = args.prediction_length
+            input_length = input_length,
+            prediction_length = prediction_length,
         )
     else:
         model = WaveletMoEForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
-            input_length = args.input_length,
-            prediction_length = args.prediction_length
+            input_length = input_length,
+            prediction_length = prediction_length,
         )
 
     eval_runner = EvaluationRunner(
@@ -38,6 +41,8 @@ def main(args):
         input_length = args.input_length,
         predict_length = args.prediction_length,
         batch_size = args.batch_size,
+        patch_size = model.patch_size,  # load patch_size from model wrapper since WaveletMoE migh have dynamic patch_size
+        use_per_sample_norm = args.use_per_sample_norm,
         num_worker = args.num_worker,
         draw_prediciton_result = args.draw_prediciton_result,
     )
@@ -87,6 +92,12 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
+        "--use_per_sample_norm", 
+        action="store_true",
+        help="use per-sample, sequence-wise norm in data collator, otherwise use batch-level norm."
+    )
+
+    parser.add_argument(
         '--num_worker',
         type=int,
         default=8,
@@ -94,7 +105,7 @@ if __name__ == '__main__':
 
     parser.add_argument(
         "--draw_prediciton_result", 
-        default=True,
+        action="store_true",
         help="draw prediction result of first batch, save in args.output_path"
     )
    
