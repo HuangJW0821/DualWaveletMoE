@@ -155,7 +155,8 @@ if __name__ == "__main__":
     parser.add_argument("--wavelet_dwt_level", type=int, default=2)
 
     parser.add_argument("--loss_func", type=str, choices=["huber", "mse"], default="huber")
-    parser.add_argument("--lazy_window",type=bool, default=False, help="whether to use lazy loading for windows")
+    
+    parser.add_argument("--use_lazy_window",type=bool, default=False, help="whether to use lazy loading for windows")
     parser.add_argument("--cache_dir", type=str, default="~/.cache/wavelet_moe", help="directory for caching datasets and models")
     parser.add_argument("--use_dataset_cache", type=bool, default=True, help="whether to use cached datasets if available")
     parser.add_argument("--use_balanced_sampler", type=bool, default=False, help="whether to use balanced sampler for training data")
@@ -214,7 +215,8 @@ if __name__ == "__main__":
         wavelet_dwt_level=args.wavelet_dwt_level,
 
         loss_func = args.loss_func,
-        lazy_window = args.lazy_window,
+
+        use_lazy_window = args.use_lazy_window,
         cache_dir = args.cache_dir,
         use_dataset_cache = args.use_dataset_cache,
         use_balanced_sampler = args.use_balanced_sampler,

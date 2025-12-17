@@ -221,6 +221,7 @@ class WaveletMoeRunner:
         #     data_collator= data_collator,
         #     needed_column_names = ["data", "loss_mask"],
         # )
+        
         trainer.train()
         trainer.save_model()
         log_in_local_rank_0(f'Saving model to {self.output_path}')
@@ -235,11 +236,11 @@ class WaveletMoeRunner:
         context_length = int(config.get("context_length", config["max_length"]))
         prediction_length = int(config.get("prediction_length", 0))
         window_size = context_length + prediction_length
-        print("Window size:", window_size)
+        log_in_local_rank_0("Window size:", window_size)
 
         stride = window_size
 
-        lazy = bool(config.get("lazy_window", False))
+        use_lazy_window = bool(config.get("lazy_window", False))
         cache_dir = config.get("cache_dir", None)
         use_cache = bool(config.get("use_dataset_cache", True))
 
@@ -254,7 +255,7 @@ class WaveletMoeRunner:
             context_length=context_length,
             prediction_length=prediction_length,
             stride=stride,
-            lazy=False,
+            use_lazy_window=False,
             dataset_cache_path=cache_dir,
             use_dataset_cache=use_cache,
         )
