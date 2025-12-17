@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import warnings
 from torch.utils.data import Dataset
-
+import torch
 from wavelet_moe.datasets.time_series_dataset import TimeSeriesDataset, GeneralDataset, BinaryDataset
 
 
@@ -245,7 +245,7 @@ class WaveletMoeMultipleDomainDataset(TimeSeriesDataset):
         return self.num_tokens
 
 
-# TODO: clean rebundent annotation
+
 class WaveletMoeWindowDataset:
     """
     A dataset class for generating non-overlapping sliding windows from a time series dataset.
@@ -1154,7 +1154,7 @@ class WaveletMoeWindowDataset:
         }
 
 
-# TODO: clean rebundent annotation
+
 class WaveletMoeWindowTensorDataset(Dataset):
     """
     Wrapper of WaveletMoeWindowDataset, in order to split train & test (validation) set
@@ -1167,7 +1167,7 @@ class WaveletMoeWindowTensorDataset(Dataset):
 
     def __init__(
         self,
-        window_dataset: Dataset,    # why Dataset ?
+        window_dataset: Dataset,
         split: str = "train",
         test_size: float = 0.0001,
         seed: int = 42,
@@ -1175,7 +1175,7 @@ class WaveletMoeWindowTensorDataset(Dataset):
         """
         Args:
             window_dataset:
-                TimeMoEWindowDataset 实例（已经是窗口级数据）。
+                TimeMoEWindowDataset 实例。
             split:
                 "train" 或 "test"。
             test_size:
@@ -1205,38 +1205,18 @@ class WaveletMoeWindowTensorDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        # 映射到底层 TimeMoEWindowDataset 的窗口索引
         win_idx = int(self.indices[idx])
         sample = self.base_ds[win_idx]
 
-        # TimeMoEWindowDataset 返回的一维窗口
+        seq = sample["input_ids"]
+        mask = sample["loss_masks"] if "loss_masks" in sample else sample.get("loss_mask")
 
-        seq = np.asarray(sample["input_ids"], dtype=np.float32)      # [T]
-        loss_mask = np.asarray(
-            sample.get("loss_masks", sample.get("loss_mask")),
-            dtype=np.float32,
-        )  # [T]
+        seq = np.asarray(seq, dtype=np.float32)  # [T]
+        mask = np.asarray(mask, dtype=np.float32)  # [T]
 
-        if seq.ndim != 1:
-            raise ValueError(
-                f"Expect 1D sequence from TimeMoEWindowDataset, got shape {seq.shape}"
-            )
-        if loss_mask.shape[0] != seq.shape[0]:
-            raise ValueError(
-                f"loss_mask length {loss_mask.shape[0]} != seq length {seq.shape[0]}"
-            )
-
-        input_seq = seq[:, None]         # [T] -> [T, 1]
-
-        # 给 WaveletTimeSeriesDataset 使用：
-        #   - input_ids: [C, T]，这里 C=1
-        #   - loss_mask: [T,] step-wise 掩码
-        input_ids = input_seq.T
-        step_loss_mask = loss_mask
-        new_sample = {
-            "input_ids": input_ids,           # [1, T]
-            "loss_mask": step_loss_mask,      # [T,]
-        }
-
-
+        data = torch.from_numpy(seq).unsqueeze(0)  # [1, T], float32
+        loss_mask = torch.from_numpy(mask)  # [T], float32
+        new_sample={"data": data, "loss_mask": loss_mask}
         return new_sample
+
+
