@@ -22,10 +22,8 @@ class WaveletMoeConfig(PretrainedConfig):
             max_position_embeddings: int = 32768,
             initializer_range: float = 0.02,
             rms_norm_eps: float = 1e-6,
-            use_dense: bool = False,
             rope_theta: int = 10000,
             attention_dropout: float = 0.0,
-            use_load_balance_loss: bool = True,
             load_balance_loss_factor: float = 0.02,
             tie_word_embeddings: bool = False,
             wavelet_function: str = "bior2.2",
@@ -35,6 +33,9 @@ class WaveletMoeConfig(PretrainedConfig):
             normalization_method: str = "none",
             use_topk_kv: bool = True,
             topk_kv: int = -1,
+            use_dense: bool = False,
+            use_load_balance_loss: bool = True,
+            use_per_sample_norm: bool = False,
             **kwargs,
     ):  
         self.hidden_size = hidden_size

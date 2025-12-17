@@ -186,7 +186,8 @@ class WaveletMoeRunner:
             wavelet_function = model.config.wavelet_function,
             signal_extension_mode = model.config.wavelet_signal_extension_mode,
             level = model.config.wavelet_dwt_level,
-            normalization_method = model.config.normalization_method
+            normalization_method = model.config.normalization_method,
+            use_per_sample_norm = model.config.use_per_sample_norm
         )
 
         # init trainer, start training & save result
