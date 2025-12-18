@@ -9,31 +9,30 @@ from transformers.data.data_collator import DataCollatorMixin
 from datasets.utils.logging import disable_progress_bar
 disable_progress_bar()
 
-# def zero_scaler(batch: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-#     mean = batch.mean(dim=1, keepdim=True)
-#     std = batch.std(dim=1, keepdim=True, unbiased=False)
-#     return (batch - mean) / (std + eps)
-#
-# def max_scaler(seq: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-#     max_val = torch.abs(seq).amax()
-#     return seq / (max_val + eps)
+def zero_scaler_on_seq(batch: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    mean = batch.mean(dim=1, keepdim=True)
+    std = batch.std(dim=1, keepdim=True, unbiased=False)
+    return (batch - mean) / (std + eps)
 
-def zero_scaler(seq: torch.Tensor):
-    mean_val = seq.mean()
-    std_val = seq.std()
+def max_scaler_on_seq(batch: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    max_val = torch.abs(batch).amax()
+    return batch / (max_val + eps)
+
+def zero_scaler_on_batch(batch: torch.Tensor) -> torch.Tensor:
+    mean_val = batch.mean()
+    std_val = batch.std()
     if std_val == 0:
-        normed_seq = seq - mean_val
+        batch = batch - mean_val
     else:
-        normed_seq = (seq - mean_val) / std_val
-    return normed_seq
+        batch = (batch - mean_val) / std_val
+    return batch
 
-def max_scaler(seq: torch.Tensor):
-    max_val = torch.abs(seq).max()
-    if max_val == 0:
-        normed_seq = seq
-    else:
-        normed_seq = seq / max_val
-    return normed_seq
+def max_scaler_on_batch(batch: torch.Tensor) -> torch.Tensor:
+    max_val = torch.abs(batch).max()
+    if max_val != 0:
+        batch = batch / max_val
+    return batch
+
 
 class WaveletTimeSeriesDataCollator(DataCollatorMixin):
     """
@@ -43,11 +42,12 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
     Args:
      batch_size: Number of sequences contained in batch. If the batch contains multiple groups, \
         any part exceeding the *batch_size* will be truncated. The number of groups in the batch is denoted as *group_num*.
-     patch_size: Patch size of sequences, final length of token will be *token_len = patch_size X 2*.
+     patch_size: Patch size of sequences, final length of token will be *token_len = patch_size*.
      wavelet_function: Wavelet function use for DWT.
      signal_extension_mode: Signal extension mode of DWT.
      level: DWT level.
      normalization_method: Normalization method (scaling method) of sequences.
+     use_per_sample_norm (`bool`): If `True`, conduct per-sample, sequence-wise normalizationnorm; otherwise global batch-level.
      
     Returns:
      batch:
@@ -65,7 +65,8 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         wavelet_function: str = "bior2.2", 
         signal_extension_mode: str = "periodization", 
         level: int = 2, 
-        normalization_method: str = 'zero',
+        normalization_method: str = 'zero', 
+        use_per_sample_norm: bool = False
     ):
         if patch_size%2 != 0:
             raise ValueError(f"Patch size should be an even number, not {patch_size}.")
@@ -74,14 +75,13 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         self.patch_size = patch_size
         self.tokenizer = DWTTokenizer(wavelet_function, signal_extension_mode, level, patch_size=patch_size)
 
-
         if normalization_method is None:
             self.normalization_method = None
         elif isinstance(normalization_method, str):
             if normalization_method.lower() == 'max':
-                self.normalization_method = max_scaler
+                self.normalization_method = max_scaler_on_seq if use_per_sample_norm else max_scaler_on_batch
             elif normalization_method.lower() == 'zero':
-                self.normalization_method = zero_scaler
+                self.normalization_method = zero_scaler_on_seq if use_per_sample_norm else zero_scaler_on_batch
             else:
                 raise ValueError(f'Unknown normalization method: {normalization_method}')
     

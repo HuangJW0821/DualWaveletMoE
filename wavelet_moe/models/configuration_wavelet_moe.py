@@ -22,18 +22,20 @@ class WaveletMoeConfig(PretrainedConfig):
             max_position_embeddings: int = 32768,
             initializer_range: float = 0.02,
             rms_norm_eps: float = 1e-6,
-            use_dense: bool = False,
             rope_theta: int = 10000,
             attention_dropout: float = 0.0,
-            use_load_balance_loss: bool = True,
             load_balance_loss_factor: float = 0.02,
             tie_word_embeddings: bool = False,
             wavelet_function: str = "bior2.2",
             wavelet_signal_extension_mode: str = "periodization",
             wavelet_dwt_level: int = 2,
             loss_func: str = "huber",
-            # use_topk_kv: bool = True,
-            # topk_kv: int = None,
+            normalization_method: str = "none",
+            use_topk_kv: bool = True,
+            topk_kv: int = -1,
+            use_dense: bool = False,
+            use_load_balance_loss: bool = True,
+            use_per_sample_norm: bool = False,
             **kwargs,
     ):  
         self.hidden_size = hidden_size
@@ -47,7 +49,7 @@ class WaveletMoeConfig(PretrainedConfig):
 
         self.num_key_value_heads = num_key_value_heads
         self.hidden_act = hidden_act
-        
+
         self.num_experts_per_token = num_experts_per_token
         self.num_experts = num_experts
         self.initializer_range = initializer_range
@@ -58,12 +60,9 @@ class WaveletMoeConfig(PretrainedConfig):
         self.use_load_balance_loss = use_load_balance_loss
         self.load_balance_loss_factor = load_balance_loss_factor
 
-        assert self.use_dense ^ self.use_load_balance_loss, 'Both use_dense and use_load_balance_loss cannot be set to True or False at the same time.'
-
-        if patch_size%2 != 0:
-            raise ValueError(f"Patch size should be multiple of 2, not {patch_size}.")
         self.patch_size = patch_size
         self.token_len = patch_size
+        self.input_size = patch_size * 2
         
         if isinstance(horizon_lengths, int):
             horizon_lengths = [horizon_lengths]
@@ -74,13 +73,32 @@ class WaveletMoeConfig(PretrainedConfig):
         self.wavelet_dwt_level = wavelet_dwt_level
         self.loss_func = loss_func
 
-        # self.use_topk_kv = use_topk_kv
-        # self.topk_kv = topk_kv
-        # if use_topk_kv and topk_kv is None:
-        #     raise ValueError(f"topk_kv should not be None if filter MHA is used.")
+        if normalization_method.lower() == "none":
+            normalization_method = None
+        self.normalization_method = normalization_method
 
+        self.use_topk_kv = use_topk_kv
+        self.topk_kv = topk_kv
+        
         kwargs.pop('tie_word_embeddings', None)
         super().__init__(
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
+    
+    def validate(self):
+        if not self.use_dense ^ self.use_load_balance_loss:
+            raise ValueError("Both use_dense and use_load_balance_loss cannot be set to True or False at the same time.")
+
+        if self.patch_size%2 != 0:
+            raise ValueError(f"Patch size should be multiple of 2, not {self.patch_size}.")
+        
+        if self.loss_func not in ["huber", "mse", "none"]:
+            raise NotImplementedError(f"Loss function {self.loss_func} is not implemented.")
+        
+        if self.normalization_method is not None and self.normalization_method not in ["zero", "max"]:
+            raise NotImplementedError(f"Normlization method {self.normalization_method} is not implemented.")
+        
+        if self.use_topk_kv and self.topk_kv < 0:
+            raise ValueError(f"topk_kv should larget than 0 if filter MHA is used.")
+

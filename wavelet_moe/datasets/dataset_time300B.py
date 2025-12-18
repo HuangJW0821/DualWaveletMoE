@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 import warnings
 from torch.utils.data import Dataset
+import torch
 
 from wavelet_moe.datasets.time_series_dataset import TimeSeriesDataset, GeneralDataset, BinaryDataset
+from wavelet_moe.utils.log_util import log_in_local_rank_0
 
 
 def binary_search(sorted_list, value):
@@ -245,7 +247,7 @@ class WaveletMoeMultipleDomainDataset(TimeSeriesDataset):
         return self.num_tokens
 
 
-# TODO: clean rebundent annotation
+# TODO: remove rebundant annotation
 class WaveletMoeWindowDataset:
     """
     A dataset class for generating non-overlapping sliding windows from a time series dataset.
@@ -283,7 +285,7 @@ class WaveletMoeWindowDataset:
             context_length: int=4096, 
             prediction_length: int = 0, 
             stride: int = None,
-            lazy: bool = False, 
+            use_lazy_window: bool = False, 
             dataset_cache_path: Optional[str] = None, 
             use_dataset_cache: bool = True, 
             **kwargs
@@ -294,7 +296,7 @@ class WaveletMoeWindowDataset:
          context_length (`int`): Length of the input context window.
          prediction_length (`int`): Total size of the sliding window (`context_length + prediction_length`).
          stride: (`int`): Step size for sliding the window. Defaults to `window_size`.
-         lazy: 是否使用 Lazy 模式（默认False）
+         lazy (`bool`): if use lazy mode 
             - False (非 Lazy): 预计算所有窗口索引（所有可能的 offset）
                 * 初始化：遍历所有序列，预计算所有窗口索引，存储到 sub_seq_indexes
                 * 访问：直接索引 sub_seq_indexes[window_idx]，O(1) 访问
@@ -313,12 +315,12 @@ class WaveletMoeWindowDataset:
         self.prediction_length = prediction_length
         self.window_size = context_length + prediction_length
         self.stride = stride if stride else self.window_size
-        self.lazy = lazy
+        self.use_lazy_window = use_lazy_window
         self.use_dataset_cache = use_dataset_cache
         self.dataset_cache_path = Path(dataset_cache_path) if dataset_cache_path else Path(
             os.path.join(os.path.dirname(__file__), '.cache', 'wavelet_moe_windows'))
 
-        # 质量检查阈值（参考 Chronos）
+        # threshold for quality check
         self.zero_threshold = 0.2
 
         # 获取数据集信息（用于记录 subset_id）
@@ -339,7 +341,7 @@ class WaveletMoeWindowDataset:
             cached_lazy = cached_data.get('lazy', False)
             cache_loaded = False
 
-            if cached_lazy and self.lazy:
+            if cached_lazy and self.use_lazy_window:
                 # lazy 模式的缓存：只包含元数据，不包含完整窗口列表
                 if 'sequence_metadata' in cached_data and 'window_cumsum' in cached_data and 'window_list' in cached_data:
                     # 验证 subset_names 是否匹配（数据集结构可能变化）
@@ -397,9 +399,9 @@ class WaveletMoeWindowDataset:
                         print(f'  索引构建耗时: {build_time:.1f}秒')
 
                     # 如果缓存是非 lazy 的，但当前要求 lazy，则禁用 lazy（因为缓存包含完整信息）
-                    if self.lazy and not cached_lazy:
+                    if self.use_lazy_window and not cached_lazy:
                         print(f'  注意: 缓存包含完整窗口信息，lazy 模式自动禁用')
-                        self.lazy = False
+                        self.use_lazy_window = False
 
                     # 确保 window_cumsum 存在（非 lazy 模式下，window_cumsum 应该等于 window_list 的长度）
                     if not hasattr(self, 'window_cumsum'):
@@ -442,7 +444,7 @@ class WaveletMoeWindowDataset:
 
         # 确保 window_cumsum 存在（用于 lazy 模式和 __len__ 方法）
         if not hasattr(self, 'window_cumsum'):
-            if self.lazy and hasattr(self, 'sequence_metadata'):
+            if self.use_lazy_window and hasattr(self, 'sequence_metadata'):
                 # lazy 模式下，从 sequence_metadata 计算（应该已经在 _init_lazy_windows 中初始化）
                 self.window_cumsum = [0]
                 for meta in self.sequence_metadata:
@@ -871,7 +873,7 @@ class WaveletMoeWindowDataset:
             'prediction_length': self.prediction_length,
             'window_size': self.window_size,
             'stride': self.stride,
-            'lazy': self.lazy,
+            'lazy': self.use_lazy_window,
             'zero_threshold': self.zero_threshold,
         }
 
@@ -952,13 +954,13 @@ class WaveletMoeWindowDataset:
                 'prediction_length': self.prediction_length,
                 'window_size': self.window_size,
                 'stride': self.stride,
-                'lazy': self.lazy,
+                'lazy': self.use_lazy_window,
                 'zero_threshold': self.zero_threshold,  # 质量检查阈值
                 'num_subsets': self.num_subsets if hasattr(self, 'num_subsets') else 1,
                 'subset_names': self.subset_names if hasattr(self, 'subset_names') else [],
             }
 
-            if self.lazy:
+            if self.use_lazy_window:
                 # lazy 模式：只保存元数据（轻量级）
                 cached_data.update({
                     'sequence_metadata': self.sequence_metadata if hasattr(self, 'sequence_metadata') else [],
@@ -1024,7 +1026,7 @@ class WaveletMoeWindowDataset:
         return True
 
     def __len__(self):
-        if self.lazy:
+        if self.use_lazy_window:
             # Lazy 模式：返回估算的窗口数量（实际有效窗口数可能更少，因为质量检查）
             if hasattr(self, 'window_cumsum') and len(self.window_cumsum) > 0:
                 return self.window_cumsum[-1]
@@ -1045,7 +1047,7 @@ class WaveletMoeWindowDataset:
             yield self[i]
 
     def __getitem__(self, window_idx):
-        if self.lazy:
+        if self.use_lazy_window:
             # Lazy 模式：动态生成窗口并做质量检查
             # 使用二分查找找到对应的序列
             seq_meta_idx = self._find_sequence_for_window(window_idx)
@@ -1154,7 +1156,7 @@ class WaveletMoeWindowDataset:
         }
 
 
-# TODO: clean rebundent annotation
+# TODO: remove rebundant annotation
 class WaveletMoeWindowTensorDataset(Dataset):
     """
     Wrapper of WaveletMoeWindowDataset, in order to split train & test (validation) set
@@ -1167,7 +1169,7 @@ class WaveletMoeWindowTensorDataset(Dataset):
 
     def __init__(
         self,
-        window_dataset: Dataset,    # why Dataset ?
+        window_dataset: Dataset,
         split: str = "train",
         test_size: float = 0.0001,
         seed: int = 42,
@@ -1175,7 +1177,7 @@ class WaveletMoeWindowTensorDataset(Dataset):
         """
         Args:
             window_dataset:
-                TimeMoEWindowDataset 实例（已经是窗口级数据）。
+                TimeMoEWindowDataset 实例。
             split:
                 "train" 或 "test"。
             test_size:
@@ -1205,38 +1207,18 @@ class WaveletMoeWindowTensorDataset(Dataset):
         return len(self.indices)
 
     def __getitem__(self, idx):
-        # 映射到底层 TimeMoEWindowDataset 的窗口索引
         win_idx = int(self.indices[idx])
         sample = self.base_ds[win_idx]
 
-        # TimeMoEWindowDataset 返回的一维窗口
+        seq = sample["input_ids"]
+        mask = sample["loss_masks"] if "loss_masks" in sample else sample.get("loss_mask")
 
-        seq = np.asarray(sample["input_ids"], dtype=np.float32)      # [T]
-        loss_mask = np.asarray(
-            sample.get("loss_masks", sample.get("loss_mask")),
-            dtype=np.float32,
-        )  # [T]
+        seq = np.asarray(seq, dtype=np.float32)  # [T]
+        mask = np.asarray(mask, dtype=np.float32)  # [T]
 
-        if seq.ndim != 1:
-            raise ValueError(
-                f"Expect 1D sequence from TimeMoEWindowDataset, got shape {seq.shape}"
-            )
-        if loss_mask.shape[0] != seq.shape[0]:
-            raise ValueError(
-                f"loss_mask length {loss_mask.shape[0]} != seq length {seq.shape[0]}"
-            )
-
-        input_seq = seq[:, None]         # [T] -> [T, 1]
-
-        # 给 WaveletTimeSeriesDataset 使用：
-        #   - input_ids: [C, T]，这里 C=1
-        #   - loss_mask: [T,] step-wise 掩码
-        input_ids = input_seq.T
-        step_loss_mask = loss_mask
-        new_sample = {
-            "input_ids": input_ids,           # [1, T]
-            "loss_mask": step_loss_mask,      # [T,]
-        }
-
-
+        data = torch.from_numpy(seq).unsqueeze(0)  # [1, T], float32
+        loss_mask = torch.from_numpy(mask)  # [T], float32
+        new_sample={"data": data, "loss_mask": loss_mask}
         return new_sample
+
+

@@ -33,7 +33,7 @@ class WaveletMoEForEvaluation(ModelForEvaluation):
             device: torch.device, 
             input_length: int, 
             prediction_length: int,
-            patch_size: int = 8
+            patch_size: int = None
         ):
 
         super().__init__(model_path, input_length, prediction_length, patch_size)
@@ -43,6 +43,8 @@ class WaveletMoEForEvaluation(ModelForEvaluation):
             device_map = device,
             torch_dtype = 'auto',
         )
+
+        self.patch_size = model.config.patch_size   # load from model config
 
         self.model = model
         self.device = device
