@@ -50,6 +50,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model', '-m',
         type=str,
+        # default='/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/1215_valid_bsz16/checkpoint-30000',
         default='Maple728/TimeMoE-50M',
         help='Model path'
     )
@@ -57,12 +58,14 @@ if __name__ == '__main__':
         '--dataset_path', '-d',
         type=str,
         default="/data/home/dataset/gifteval_benchmark_strictly_processed_copy",
+        # default="/data/home/dataset/USTD_12G_zero_shot_processed",
         help='Benchmark data path'
     )
     parser.add_argument(
         '--output_path', '-o',
         type=str,
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/timemoe_50M",
+        # default="results/1215_valid_bsz16/checkpoint-30000",
+        default="results/other",
         help='Output path'
     )
 
@@ -89,12 +92,12 @@ if __name__ == '__main__':
     parser.add_argument(
         '--num_worker',
         type=int,
-        default=8,
+        default=16,
     )
 
     parser.add_argument(
         "--draw_prediciton_result", 
-        default=True,
+        default=False,
         help="draw prediction result of first batch, save in args.output_path"
     )
    

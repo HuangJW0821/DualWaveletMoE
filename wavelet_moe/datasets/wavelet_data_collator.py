@@ -48,7 +48,6 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
      signal_extension_mode: Signal extension mode of DWT.
      level: DWT level.
      normalization_method: Normalization method (scaling method) of sequences.
-     mode: `str`, should be one of `["TRAIN", "TEST"]`
      
     Returns:
      batch:
@@ -66,8 +65,7 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         wavelet_function: str = "bior2.2", 
         signal_extension_mode: str = "periodization", 
         level: int = 2, 
-        normalization_method: str = 'zero', 
-        mode: str = "TRAIN"
+        normalization_method: str = 'zero',
     ):
         if patch_size%2 != 0:
             raise ValueError(f"Patch size should be an even number, not {patch_size}.")
@@ -76,9 +74,6 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
         self.patch_size = patch_size
         self.tokenizer = DWTTokenizer(wavelet_function, signal_extension_mode, level, patch_size=patch_size)
 
-        if mode not in ["TRAIN", "TEST"]:
-            raise ValueError(f"Arg str should be one of [\"TRAIN\", \"TEST\"], not \"{mode}\". ")
-        self.mode = mode
 
         if normalization_method is None:
             self.normalization_method = None
@@ -108,7 +103,7 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
                 break
             # when testing, if contains more than one groups, drop the last incomplete group,
             # assure that every group in batch is complete
-            if self.mode == "TEST" and current_batch_size > 0 and remaining < group_size:
+            if current_batch_size > 0 and remaining < group_size:
                 break
             current_group_size = min(remaining, group_size)
             batch_data = torch.cat([batch_data, group_data[:current_group_size]], dim=0)
