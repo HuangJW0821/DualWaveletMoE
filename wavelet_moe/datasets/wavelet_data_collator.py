@@ -103,7 +103,7 @@ class WaveletTimeSeriesDataCollator(DataCollatorMixin):
                 break
             # when testing, if contains more than one groups, drop the last incomplete group,
             # assure that every group in batch is complete
-            if self.mode == "TEST" and current_batch_size > 0 and remaining < group_size:
+            if current_batch_size > 0 and remaining < group_size:
                 break
             current_group_size = min(remaining, group_size)
             batch_data = torch.cat([batch_data, group_data[:current_group_size]], dim=0)
