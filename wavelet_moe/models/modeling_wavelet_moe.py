@@ -1086,6 +1086,8 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
 
     def __init__(self, config: WaveletMoeConfig):
         super().__init__(config)
+        config.validate()
+
         self.config = config
         self.num_experts_per_token = config.num_experts_per_token
         self.use_load_balance_loss = config.use_load_balance_loss
@@ -1401,13 +1403,10 @@ class WaveletMoeForPrediction(WaveletMoePreTrainedModel, WaveletGenerationMixin)
             attention_mask: (`torch.Tensor`)
                 The attention_mask used in forward function
                 shape [batch_size, seq_length]
-            time_axis_loss_factor: (`float`)
-                Weight of time axis load balancing loss.
 
         Returns:
             loss:
                 Auxiliary load balancing loss. \n
-                `loss = time_axis_loss_factor * time_axis_loss + (1-time_axis_loss_factor) * channel_axis_loss`
         """
 
         num_layers = len(gate_logits)
