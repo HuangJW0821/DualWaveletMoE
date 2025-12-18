@@ -4,7 +4,7 @@ import os
 import argparse
 
 from wavelet_moe.evaluation.eval_runner import EvaluationRunner
-from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation
+from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation, SundialForEvaluation, TimerForEvaluation
 
 def main(args):
     local_rank = int(os.getenv('LOCAL_RANK') or 0)
@@ -25,6 +25,21 @@ def main(args):
             device = f"cuda:{local_rank}",
             input_length = input_length,
             prediction_length = prediction_length,
+        )
+    elif "Sundial" in args.model or "sundial" in args.model:
+        model = SundialForEvaluation(
+            model_path = args.model,
+            device = f"cuda:{local_rank}",
+            input_length = args.input_length,
+            prediction_length = args.prediction_length,
+            num_samples=20
+        )
+    elif "Timer" in args.model or "timer" in args.model:
+        model = TimerForEvaluation(
+            model_path = args.model,
+            device = f"cuda:{local_rank}",
+            input_length = args.input_length,
+            prediction_length = args.prediction_length
         )
     else:
         model = WaveletMoEForEvaluation(
