@@ -4,6 +4,7 @@ from abc import abstractmethod
 import numpy as np
 import pandas as pd
 from transformers import AutoModelForCausalLM
+import timesfm
 
 from wavelet_moe.models.modeling_wavelet_moe import WaveletMoeForPrediction
 
@@ -499,3 +500,114 @@ class TimerForEvaluation(ModelForEvaluation):
         preds = np.array(preds.cpu())
 
         return inputs, labels, preds
+
+
+class TimesfmForEvaluation(ModelForEvaluation):
+    def __init__(
+        self,
+        model_path: str,
+        device: torch.device,
+        input_length: int,
+        prediction_length: int,
+        patch_size: int = 8,  # TimesFM 不使用 patch
+        forecast_config: timesfm.ForecastConfig = None,
+    ):
+        super().__init__(model_path, input_length, prediction_length, patch_size)
+
+        torch.set_float32_matmul_precision("high")
+
+        # Load model
+        model = timesfm.TimesFM_2p5_200M_torch.from_pretrained(model_path)
+
+        if forecast_config is None:
+            forecast_config = timesfm.ForecastConfig(
+                max_context=input_length*patch_size,
+                max_horizon=prediction_length*patch_size,
+                normalize_inputs=False,
+                use_continuous_quantile_head=True,
+                force_flip_invariance=True,
+                infer_is_positive=True,
+                fix_quantile_crossing=True,
+            )
+
+        model.compile(forecast_config)
+
+        self.model = model
+        self.device = device
+    
+
+    def _prepare_items_for_generate(self, batch: Dict):
+        """
+        Args:
+         batch: Dict
+
+        Returns:
+         (inputs, labels):
+         - inputs: List[np.ndarray], each with shape (input_length,)
+         - labels: torch.Tensor, shape (batch_size, prediction_length)
+        """
+
+        model = self.model
+        device = self.device
+
+        input_length = self.input_length
+        prediction_length = self.prediction_length
+        patch_size=self.patch_size
+
+        input_ids = batch["time_seq"]  # (B, T, token_len)
+        batch_size, seq_len, _ = input_ids.shape
+
+        if input_length + prediction_length > seq_len:
+            raise ValueError(
+                f"Input length + Pred length [{input_length} + {prediction_length}] "
+                f"should be <= seq_len [{seq_len}]"
+            )
+
+        inputs = input_ids[:, : input_length, : patch_size].float()
+        labels = input_ids[:, input_length : input_length + prediction_length, : patch_size].float()
+        
+        inputs = inputs.reshape(batch_size, input_length * patch_size)
+        labels = labels.reshape(batch_size, prediction_length * patch_size)
+
+        return inputs, labels
+    
+    def generate(self, batch: Dict):
+        """
+        Returns:
+         (preds, labels):
+         - preds: torch.Tensor, shape (batch_size, prediction_length)
+         - labels: torch.Tensor, shape (batch_size, prediction_length)
+        """
+
+        inputs, labels = self._prepare_items_for_generate(batch)
+
+        with torch.no_grad():
+            point_forecast, _ = self.model.forecast(
+                horizon=self.prediction_length*self.patch_size,
+                inputs=inputs,
+            )
+
+        preds = torch.tensor(point_forecast, dtype=torch.float32)
+        
+
+        return preds, labels
+    
+    def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
+        """
+        Returns:
+         (inputs, labels, preds):
+         - inputs: np.ndarray, shape (batch_size, input_length)
+         - labels: np.ndarray, shape (batch_size, prediction_length)
+         - preds:  np.ndarray, shape (batch_size, prediction_length)
+        """
+
+        inputs, labels = self._prepare_items_for_generate(batch)
+
+        # inputs = np.stack(inputs, axis=0)
+        inputs = np.array(inputs.cpu())
+        labels = labels.cpu().numpy()
+        preds = preds.cpu().numpy()
+
+        return inputs, labels, preds
+
+

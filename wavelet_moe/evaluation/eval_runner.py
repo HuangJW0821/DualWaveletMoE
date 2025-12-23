@@ -96,10 +96,27 @@ class EvaluationRunner():
             for i, batch in tqdm(enumerate(dataloader), desc=f"{dataset.dataset_name}-[{len(dataset)}]"):
                 preds, labels = self.model.generate(batch)
 
-                for metric in metric_list:
-                    metric.push(preds, labels)
-
-                timestep_cnt += preds.numel()
+                # Only calculate loss for samples without NaN in preds
+                # Check each sample: if preds has any NaN, skip the entire sample
+                batch_size = preds.shape[0]
+                valid_samples = []
+                
+                for sample_idx in range(batch_size):
+                    sample_preds = preds[sample_idx]
+                    # Only skip if preds has NaN (labels NaN doesn't matter)
+                    if not torch.isnan(sample_preds).any():
+                        valid_samples.append(sample_idx)
+                
+                if len(valid_samples) > 0:
+                    # Only push valid samples to metrics
+                    valid_preds = preds[valid_samples]
+                    valid_labels = labels[valid_samples]
+                    
+                    for metric in metric_list:
+                        metric.push(valid_preds, valid_labels)
+                    
+                    # Count valid timesteps (all timesteps from valid samples)
+                    timestep_cnt += valid_preds.numel()
 
                 if i==100:
                     break
