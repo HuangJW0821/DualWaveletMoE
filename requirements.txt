@@ -10,3 +10,7 @@ transformers==4.40.1
 PyWavelets==1.9.0
 datasets==4.4.1
 huggingface_hub==0.35.1
+
+# repspetively for Chronos & Moirai family for evaluation, may lead to dependency conflicts 
+# chronos-forecasting==2.2.1
+# uni2ts==2.0.0
