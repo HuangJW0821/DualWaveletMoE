@@ -2,7 +2,7 @@ import os
 import argparse
 
 from wavelet_moe.evaluation.prediction_result_painter import MultipleModelPredictionResultPainter
-from wavelet_moe.evaluation.eval_models import ModelForEvaluation, WaveletMoEForEvaluation, TimeMoEForEvaluation, Chronos2ForEvaluation, ChronosForEvaluation
+from wavelet_moe.evaluation.eval_models import ModelForEvaluation, WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation
 
 # -------------- Set Arguments Manually ------------
 LOCAL_RANK = int(os.getenv('LOCAL_RANK') or 0)
@@ -15,7 +15,7 @@ PREDICTION_LENGTH = 12
 MODEL_LIST = [
 
     WaveletMoEForEvaluation(
-        model_path = "/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/WaveletMoE_multivariate/logs/uni_50M_syn_from_scratch/checkpoint-50000",
+        model_path = "/data/home/weibin/ckpt_new50M/14/checkpoint-15000",
         device = f"cuda:{LOCAL_RANK}",
         input_length = INPUT_LENGTH,
         prediction_length = PREDICTION_LENGTH
@@ -32,7 +32,7 @@ MODEL_LIST = [
 # MODEL_NAME_LIST: List[model_name: str]
 # use as label name in fig
 MODEL_NAME_LIST = [
-    "WaveletMoE-50M (synth data, 50k)",
+    "WaveletMoE-50M",
     "TimeMoE-50M"
 ]
 
@@ -68,13 +68,13 @@ if __name__ == '__main__':
     parser.add_argument(
         '--dataset_path', '-d',
         type=str,
-        default="/data/home/dataset/wavelet_moe_multivariate/bench/high_low_freq_syn_test",
+        default="/data/home/dataset/chronos_zero_shot_benchmark",
         help='Benchmark data path'
     )
     parser.add_argument(
         '--output_path', '-o',
         type=str,
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/WaveletMoE_multivariate/figs/high_low_freq_eval",
+        default="draw_results/chronos2",
         help='Output path'
     )
     parser.add_argument(
