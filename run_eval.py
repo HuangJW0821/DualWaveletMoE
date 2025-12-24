@@ -2,17 +2,19 @@
 # -*- coding:utf-8 _*-
 import os
 import argparse
+from warnings import warn
 
 from wavelet_moe.evaluation.eval_runner import EvaluationRunner
-from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation
+from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation, MoiraiForEvaluation
 
 def main(args):
-    local_rank = int(os.getenv('LOCAL_RANK') or 0)
+    local_rank = int(os.getenv('LOCAL_RANK') or 1)
 
     input_length = args.input_length
     prediction_length = args.prediction_length
 
     if "TimeMoE" in args.model:
+        # model_path = f"Maple728/TimeMoE-{size}", choose size from ["50M", "200M"]
         model = TimeMoEForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
@@ -20,13 +22,31 @@ def main(args):
             prediction_length = prediction_length,
         )
     elif "chronos" in args.model:
+        # WARNING: Chronos family requires package `chronos-forecasting==2.2.1`, may cause dependency conflicts.
+        warn("Chronos family requires package `chronos-forecasting==2.2.1`, may cause dependency conflicts.", UserWarning)
+
+        # model_path = f"amazon/chronos-t5-{size}", choose size from ["tiny", "mini", "small", "base", "large"]
+        # respectively correspond to param size [8M, 20M, 46M, 200M, 710M]
         model = ChronosForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
             input_length = input_length,
             prediction_length = prediction_length,
         )
+    elif "moirai" in args.model:
+        # WARNING: Moirai family requires package `uni2ts==2.0.0`, may cause dependency conflicts.
+        warn("Moirai family requires package `uni2ts==2.0.0`, may cause dependency conflicts.", UserWarning)
+
+        # model_path = f"Salesforce/moirai-1.0-R-{size}", choose size from ["small", "base", "large"]
+        # respectively correspond to param size [14M, 91M, 311M]
+        model = MoiraiForEvaluation(
+            model_path = args.model,
+            device = f"cuda:{local_rank}",
+            input_length = input_length,
+            prediction_length = prediction_length,
+        )
     else:
+        # model_path = <local_model_ckpt_path>
         model = WaveletMoEForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
@@ -55,7 +75,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model', '-m',
         type=str,
-        default='Maple728/TimeMoE-50M',
+        default='Salesforce/moirai-1.0-R-small',
         help='Model path'
     )
     parser.add_argument(
@@ -67,7 +87,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--output_path', '-o',
         type=str,
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/timemoe_50M",
+        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/moirai/moirai_1_0",
         help='Output path'
     )
 
@@ -78,6 +98,8 @@ if __name__ == '__main__':
         help='Batch size of evaluation'
     )
 
+    # WARNING: the argument `input_length` & `prediction_length` denote the number of patches, with `patch_size==8` by default.
+    # If `patch_size` is adjusted, please ensure that `input_length` & `prediction_length` are updated accordingly.
     parser.add_argument(
         '--input_length', '-i',
         type=int,

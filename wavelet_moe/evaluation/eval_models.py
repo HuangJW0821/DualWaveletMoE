@@ -320,3 +320,122 @@ class ChronosForEvaluation(ModelForEvaluation):
         preds = np.array(preds.cpu())
 
         return inputs, labels, preds
+
+
+class MoiraiForEvaluation(ModelForEvaluation):
+    def __init__(
+        self, 
+        model_path: str, 
+        device: torch.device, 
+        input_length: int, 
+        prediction_length: int,
+        patch_size: int = 8     # consistent with WaveletMoeDataCollator, unused in real Moirai model        
+    ):
+        from uni2ts.model.moirai import MoiraiForecast, MoiraiModule
+
+        super().__init__(model_path, input_length, prediction_length, patch_size)
+
+        # Moirai-1.0 uses patch_size=32 during eval as mentioned in Section 4.1 in its paper (https://arxiv.org/abs/2402.02592).
+        # and num_samples=100 to be consistent with the examples in their git repo.
+        model = MoiraiForecast(
+            module = MoiraiModule.from_pretrained(model_path),
+            prediction_length = prediction_length * patch_size,
+            context_length = input_length * patch_size,
+            patch_size = 32,
+            num_samples = 100,
+            target_dim = 1,
+            feat_dynamic_real_dim = 0,
+            past_feat_dynamic_real_dim = 0,
+        ).to(device).eval()
+
+        self.model = model
+        self.device = device
+
+    def _prepare_items_for_generate(self, batch: Dict):
+        """
+        Args:
+         batch: `Dict`
+        
+        Returns:
+         (inputs, labels, moirai_input_dict):
+         - **inputs**: `torch.Tensor`, shape `(batch_size, input_length * patch_size)`.
+         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+         - **moirai_input_dict**: `Dict[str, torch.Tensor]`, input items in moirai's style
+        """
+        model = self.model
+        device = self.device
+
+        input_length = self.input_length
+        prediction_length = self.prediction_length
+        patch_size = self.patch_size
+
+        input_ids = batch["time_seq"]
+        batch_size, seq_len, _ = input_ids.shape
+
+        if input_length + prediction_length > seq_len:
+            raise ValueError(f"Input length + Pred length [{input_length} + {prediction_length} = {input_length + prediction_length}] should be shorter than seq_len [{seq_len}]")
+
+        inputs = input_ids[:, : input_length, : patch_size].to(device).to(model.dtype)
+        labels = input_ids[:, input_length : input_length + prediction_length, : patch_size].to(device).to(model.dtype)
+        
+        inputs = inputs.reshape(batch_size, input_length * patch_size)
+        labels = labels.reshape(batch_size, prediction_length * patch_size)
+
+        # shape [batch_sz, input_len * patch_sz, target_dim]
+        past_target = inputs.unsqueeze(-1)
+
+        # shape [batch_sz, input_len * patch_sz, target_dim]
+        past_observed_target = torch.ones_like(past_target, dtype=torch.bool, device=device)  
+
+        # shape [batch_sz, input_len * patch_sz]
+        past_is_pad = torch.zeros_like(inputs, dtype=torch.bool, device=device)
+
+        # prepare input in Moirai's style
+        moirai_input_dict = {
+            "past_target": past_target,
+            "past_observed_target": past_observed_target,
+            "past_is_pad": past_is_pad
+        }
+
+        return inputs, labels, moirai_input_dict
+
+    def generate(self, batch: Dict):
+        """
+        Args:
+         batch: `Dict`
+        
+        Returns:
+         (preds, labels):
+         - **preds**:  `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+         - **labels**: `torch.Tensor`, shape `(batch_size, pred_length * patch_size)`.
+        """
+        _, labels, input_dict = self._prepare_items_for_generate(batch)
+
+        with torch.no_grad():
+            preds = self.model(**input_dict)
+
+        # shape [batch_sz, num_samples, pred_len * patch_sz] -> [batch_sz, pred_len * patch_sz]
+        preds = preds.mean(dim=1)
+
+        return preds, labels
+
+    def prepare_items_for_plt(self, batch: Dict, preds: torch.Tensor):
+        """
+        Args:
+         batch: `Dict`
+         preds: `torch.Tensor`, shape `(batch_size, pred_length, token_len)`
+        
+        Returns:
+         (inputs, labels, seq_len):
+         - **inputs**: `np.ndarray`, shape `(batch_size, input_length * patch_size)`.
+         - **labels**: `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
+         - **preds**:  `np.ndarray`, shape `(batch_size, pred_length * patch_size)`.
+        """
+
+        inputs, labels, _ = self._prepare_items_for_generate(batch)
+
+        inputs = np.array(inputs.cpu())
+        labels = np.array(labels.cpu())
+        preds = np.array(preds.cpu())
+
+        return inputs, labels, preds
