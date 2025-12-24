@@ -5,10 +5,10 @@ import argparse
 from warnings import warn
 
 from wavelet_moe.evaluation.eval_runner import EvaluationRunner
-from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation, MoiraiForEvaluation
+from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation, MoiraiFamilyForEvaluation
 
 def main(args):
-    local_rank = int(os.getenv('LOCAL_RANK') or 1)
+    local_rank = int(os.getenv('LOCAL_RANK') or 0)
 
     input_length = args.input_length
     prediction_length = args.prediction_length
@@ -36,10 +36,18 @@ def main(args):
     elif "moirai" in args.model:
         # WARNING: Moirai family requires package `uni2ts==2.0.0`, may cause dependency conflicts.
         warn("Moirai family requires package `uni2ts==2.0.0`, may cause dependency conflicts.", UserWarning)
+        
+        # wrap moirai family in one class
 
-        # model_path = f"Salesforce/moirai-1.0-R-{size}", choose size from ["small", "base", "large"]
+        # for moirai-1, model_path = f"Salesforce/moirai-1.0-R-{size}", choose size from ["small", "base", "large"]
         # respectively correspond to param size [14M, 91M, 311M]
-        model = MoiraiForEvaluation(
+
+        # for moirai-moe, model_path = f"Salesforce/moirai-moe-1.0-R-{size}", choose size from ["small", "base"]
+        # respectively correspond to activated param size [11M, 86M] ([117M, 935M] in total)
+
+        # for moirai-2, model_path = f"Salesforce/moirai-2.0-R-{size}", choose size from ["small", "base", "large"]
+        # respectively correspond to param size [11M, 87M, 305M]
+        model = MoiraiFamilyForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
             input_length = input_length,

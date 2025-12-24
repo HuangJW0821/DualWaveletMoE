@@ -322,7 +322,8 @@ class ChronosForEvaluation(ModelForEvaluation):
         return inputs, labels, preds
 
 
-class MoiraiForEvaluation(ModelForEvaluation):
+# wrap moirai family in one class
+class MoiraiFamilyForEvaluation(ModelForEvaluation):
     def __init__(
         self, 
         model_path: str, 
@@ -332,21 +333,46 @@ class MoiraiForEvaluation(ModelForEvaluation):
         patch_size: int = 8     # consistent with WaveletMoeDataCollator, unused in real Moirai model        
     ):
         from uni2ts.model.moirai import MoiraiForecast, MoiraiModule
+        from uni2ts.model.moirai_moe import MoiraiMoEForecast, MoiraiMoEModule
+        from uni2ts.model.moirai2 import Moirai2Forecast, Moirai2Module
 
         super().__init__(model_path, input_length, prediction_length, patch_size)
 
-        # Moirai-1.0 uses patch_size=32 during eval as mentioned in Section 4.1 in its paper (https://arxiv.org/abs/2402.02592).
-        # and num_samples=100 to be consistent with the examples in their git repo.
-        model = MoiraiForecast(
-            module = MoiraiModule.from_pretrained(model_path),
-            prediction_length = prediction_length * patch_size,
-            context_length = input_length * patch_size,
-            patch_size = 32,
-            num_samples = 100,
-            target_dim = 1,
-            feat_dynamic_real_dim = 0,
-            past_feat_dynamic_real_dim = 0,
-        ).to(device).eval()
+        if "moirai-1" in model_path:
+            # Moirai-1.0 uses patch_size=32 during eval as mentioned in Section 4.1 in its paper (https://arxiv.org/abs/2402.02592).
+            model = MoiraiForecast(
+                module = MoiraiModule.from_pretrained(model_path),
+                prediction_length = prediction_length * patch_size,
+                context_length = input_length * patch_size,
+                patch_size = 32,
+                target_dim = 1,
+                feat_dynamic_real_dim = 0,
+                past_feat_dynamic_real_dim = 0
+            )
+        elif "moirai-moe" in model_path:
+            # Moirai-MoE uses patch_size=16 during eval as mentioned in Appendix B in its paper (https://arxiv.org/abs/2410.10469.
+            model = MoiraiMoEForecast(
+                module = MoiraiMoEModule.from_pretrained(model_path),
+                prediction_length = prediction_length * patch_size,
+                context_length = input_length * patch_size,
+                patch_size = 16,
+                target_dim = 1,
+                feat_dynamic_real_dim = 0,
+                past_feat_dynamic_real_dim = 0
+            )
+        elif "moirai-2" in model_path:
+            model = Moirai2Forecast(
+                module = Moirai2Module.from_pretrained(model_path),
+                prediction_length = prediction_length * patch_size,
+                context_length = input_length * patch_size,
+                target_dim = 1,
+                feat_dynamic_real_dim = 0,
+                past_feat_dynamic_real_dim = 0
+            )
+        else:
+            raise ValueError(f"Unsupport Moirai model name: {model_path}, support version: ['moirai-1.0', 'moirai-1.1', 'moirai-moe', 'moirai-2.0']")
+
+        model.to(device).eval()
 
         self.model = model
         self.device = device
