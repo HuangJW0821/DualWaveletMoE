@@ -103,6 +103,86 @@ class PredictionResultPainter:
         fig.savefig(os.path.join(output_path, f"Batch[{batch_idx}].png"))
         plt.close()
 
+    def draw_batch_prediction_result_for_pred_list(
+            self,
+            model_name_list: list,
+            color_name_list: list,
+            dataset_name: str,
+            batch_inputs: np.ndarray,
+            batch_labels: np.ndarray,
+            batch_preds_list: list,
+            batch_idx: int
+    ):
+        x_input = np.arange(self.input_length * self.patch_size)
+        x_label = np.arange(
+            self.input_length * self.patch_size,
+            (self.input_length + self.predict_length) * self.patch_size
+        )
+
+        batch_size = batch_inputs.shape[0]
+        num_models = len(batch_preds_list)
+
+        assert len(model_name_list) == num_models
+        assert len(color_name_list) == num_models
+
+        figsize = (48, batch_size * 6)
+        fig, axes = plt.subplots(nrows=batch_size, ncols=1, figsize=figsize)
+
+        if batch_size == 1:
+            axes = np.array([axes])
+        else:
+            axes = np.array(axes).reshape(-1)
+
+        for i in range(batch_size):
+            # input
+            axes[i].plot(
+                x_input,
+                batch_inputs[i],
+                c='black',
+                linewidth=2,
+                label='input'
+            )
+
+            # label
+            axes[i].plot(
+                x_label,
+                batch_labels[i],
+                c='grey',
+                linestyle='--',
+                linewidth=2,
+                label='label'
+            )
+
+            # multiple model predictions
+            for m_idx in range(num_models):
+                axes[i].plot(
+                    x_label,
+                    batch_preds_list[m_idx][i],
+                    c=color_name_list[m_idx],
+                    linewidth=2,
+                    label=model_name_list[m_idx]
+                )
+
+            axes[i].legend()
+            axes[i].set_title(f"Sample {i}")
+
+        output_path = os.path.join(
+            self.output_path,
+            f"{self.file_name}_examples",
+            dataset_name
+        )
+        os.makedirs(output_path, exist_ok=True)
+
+        fig.tight_layout()
+        fig.suptitle(
+            f"Dataset[{dataset_name}] Batch[{batch_idx}]",
+            fontsize=16,
+            fontweight='bold'
+        )
+
+        fig.savefig(os.path.join(output_path, f"Batch[{batch_idx}].png"))
+        plt.close()
+
 
 class MultipleModelPredictionResultPainter():
     def __init__(
@@ -124,7 +204,7 @@ class MultipleModelPredictionResultPainter():
         num_worker: int = 8,
         predict_target_only: bool = False
     ):
-        raise NotImplementedError("Not implemted for DualWaveletMoE yet")
+        # raise NotImplementedError("Not implemted for DualWaveletMoE yet")
         if not os.path.exists(root_path):
             raise ValueError(f"Path not exists: [{root_path}]!")
         if not os.path.exists(output_path):
@@ -161,7 +241,6 @@ class MultipleModelPredictionResultPainter():
             signal_extension_mode = mode,
             level = level,
             normalization_method = normalization_method,
-            mode = "TEST"
         )
 
         self.file_name = f"MULTIPLE_MODELs_ON_BENCHMARK[{self.benchmark_name}]_[{self.input_length} to {self.predict_length} tokens]"
@@ -172,7 +251,6 @@ class MultipleModelPredictionResultPainter():
             input_length = self.input_length,
             predict_length = self.predict_length,
             patch_size = self.patch_size,
-            predict_target_only = predict_target_only
         )
 
     def _draw_one_dataset(
@@ -197,26 +275,24 @@ class MultipleModelPredictionResultPainter():
                 if i > self.batch_num:
                     break
 
-                group_ids, preds, _ = self.model_list[0].generate(batch, target_idx = target_idx)
+                preds, _ = self.model_list[0].generate(batch)
                 batch_inputs, batch_labels, batch_preds = self.model_list[0].prepare_items_for_plt(batch, preds)
 
                 batch_preds_list = [batch_preds]
 
                 for model_idx in range(1, len(self.model_list)):
-                    _, preds, _ = self.model_list[model_idx].generate(batch, target_idx = target_idx)
+                    preds, _ = self.model_list[model_idx].generate(batch)
                     _, _, batch_preds = self.model_list[model_idx].prepare_items_for_plt(batch, preds)
                     batch_preds_list.append(batch_preds)
 
                 self.painter.draw_batch_prediction_result_for_pred_list(
                     model_name_list = self.model_name_list,
                     color_name_list = self.color_name_list,
-                    dataset_name = dataset.dataset_name, 
-                    group_ids = group_ids, 
+                    dataset_name = dataset.dataset_name,
                     batch_inputs = batch_inputs, 
                     batch_labels = batch_labels, 
-                    batch_preds_list = batch_preds_list, 
-                    batch_idx = i, 
-                    target_idx = target_idx
+                    batch_preds_list = batch_preds_list,
+                    batch_idx = i,
                 )
 
 

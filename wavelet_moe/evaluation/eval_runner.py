@@ -101,8 +101,8 @@ class EvaluationRunner():
 
                 timestep_cnt += preds.numel()
 
-                if i==100:
-                    break
+                # if i==100:
+                #     break
                 
                 if self.draw_prediciton_result and i%25==0:
                     batch_inputs, batch_labels, batch_preds = self.model.prepare_items_for_plt(batch, preds)
