@@ -83,7 +83,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--model', '-m',
         type=str,
-        default='Salesforce/moirai-1.0-R-small',
+        default='Salesforce/moirai-1.0-R-base',
         help='Model path'
     )
     parser.add_argument(
@@ -95,7 +95,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--output_path', '-o',
         type=str,
-        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/moirai/moirai_1_0",
+        default="/data/home/jiawei/PersonalFiles/Wavelet_Time_Series/DualWaveletMoE/logs/moirai/moirai_1_0_base",
         help='Output path'
     )
 

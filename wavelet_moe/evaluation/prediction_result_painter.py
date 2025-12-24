@@ -28,45 +28,6 @@ class PredictionResultPainter:
         self.predict_length = predict_length
         self.patch_size = patch_size
 
-    def _draw_group_prediction_result(
-        self, 
-        dataset_name: str, 
-        group_inputs: np.ndarray, 
-        group_labels: np.ndarray, 
-        group_predicts: np.ndarray, 
-        batch_idx: int, 
-        group_idx: int,
-        target_idx: Optional[Tuple[int]] = None
-    ):
-        x_input = np.asarray(list(range(self.input_length * self.patch_size)))
-        x_label = np.asarray(list(range(self.input_length * self.patch_size, (self.input_length + self.predict_length) * self.patch_size)))
-        
-        group_size = group_inputs.shape[0]
-
-        figsize = (48, group_size*6)
-        fig, axes = plt.subplots(nrows = group_size, ncols = 1, figsize = figsize)
-
-        if group_size == 1:
-            axes = np.array([axes])
-        else:
-            axes = np.array(axes).reshape(-1)
-
-        for i in range(group_size):
-            axes[i].plot(x_input, group_inputs[i], c='black', label='input')
-            if not (target_idx is not None and not (target_idx[0] <= i and i < target_idx[1])):
-                axes[i].plot(x_label, group_labels[i], c='grey', label='label')
-                axes[i].plot(x_label, group_predicts[i], c='red', label='prediction')
-            axes[i].legend()
-
-        output_path = os.path.join(self.output_path, f"{self.file_name}_examples", dataset_name)
-        if not os.path.exists(output_path):
-            os.makedirs(output_path)
-
-        fig.tight_layout()
-        fig.suptitle(f"Dataset[{dataset_name}]_Batch[{batch_idx}]_Example[{group_idx}]", fontsize=16, fontweight='bold')  
-        fig.savefig(os.path.join(output_path, f"Batch[{batch_idx}]_Example[{group_idx}].png"))
-        plt.close()
-
     def draw_batch_prediction_result(
         self, 
         dataset_name: str, 
@@ -102,6 +63,52 @@ class PredictionResultPainter:
         fig.suptitle(f"Dataset[{dataset_name}]_Batch[{batch_idx}]", fontsize=16, fontweight='bold')  
         fig.savefig(os.path.join(output_path, f"Batch[{batch_idx}].png"))
         plt.close()
+    
+    def draw_batch_prediction_result_for_pred_list(
+        self, 
+        model_name_list: List[str],
+        color_name_list: List[str],
+        dataset_name: str,
+        batch_inputs: np.ndarray, 
+        batch_labels: np.ndarray, 
+        batch_preds_list: List[np.ndarray], 
+        batch_idx: int
+    ):
+        x_input = np.asarray(list(range(self.input_length * self.patch_size)))
+        x_label = np.asarray(list(range(self.input_length * self.patch_size, (self.input_length + self.predict_length) * self.patch_size)))
+        
+        batch_size = batch_inputs.shape[0]
+
+        figsize = (48, batch_size*6)
+        fig, axes = plt.subplots(nrows = batch_size, ncols = 1, figsize = figsize)
+
+        if batch_size == 1:
+            axes = np.array([axes])
+        else:
+            axes = np.array(axes).reshape(-1)
+
+        for i in range(batch_size):
+            axes[i].plot(x_input, batch_inputs[i], c='black', label='input')
+            axes[i].plot(x_label, batch_labels[i], c='grey', label='label')
+
+            for j in range(len(model_name_list)):
+                axes[i].plot(
+                    x_label,
+                    batch_preds_list[j][i],
+                    c = color_name_list[j],
+                    label = model_name_list[j]
+                )
+
+            axes[i].legend()
+
+        output_path = os.path.join(self.output_path, f"{self.file_name}_examples", dataset_name)
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
+        fig.tight_layout()
+        fig.suptitle(f"Dataset[{dataset_name}]_Batch[{batch_idx}]", fontsize=16, fontweight='bold')  
+        fig.savefig(os.path.join(output_path, f"Batch[{batch_idx}].png"))
+        plt.close()
 
 
 class MultipleModelPredictionResultPainter():
@@ -122,9 +129,9 @@ class MultipleModelPredictionResultPainter():
         level: int = 2, 
         normalization_method: str = 'zero',
         num_worker: int = 8,
-        predict_target_only: bool = False
+        use_per_sample_norm: bool = False
     ):
-        raise NotImplementedError("Not implemted for DualWaveletMoE yet")
+        # raise NotImplementedError("Not implemted for DualWaveletMoE yet")
         if not os.path.exists(root_path):
             raise ValueError(f"Path not exists: [{root_path}]!")
         if not os.path.exists(output_path):
@@ -152,7 +159,6 @@ class MultipleModelPredictionResultPainter():
 
         self.patch_size = patch_size
         self.num_worker = num_worker
-        self.predict_target_only = predict_target_only
 
         self.data_collator = WaveletTimeSeriesDataCollator(
             batch_size = batch_size,
@@ -161,28 +167,23 @@ class MultipleModelPredictionResultPainter():
             signal_extension_mode = mode,
             level = level,
             normalization_method = normalization_method,
-            mode = "TEST"
+            use_per_sample_norm = use_per_sample_norm
         )
 
-        self.file_name = f"MULTIPLE_MODELs_ON_BENCHMARK[{self.benchmark_name}]_[{self.input_length} to {self.predict_length} tokens]"
+        self.file_name = f"MULTIPLE_MODELS_ON_BENCHMARK[{self.benchmark_name}]_[{self.input_length} to {self.predict_length} tokens]"
 
         self.painter = PredictionResultPainter(
             output_path = self.output_path,
             file_name = self.file_name,
             input_length = self.input_length,
             predict_length = self.predict_length,
-            patch_size = self.patch_size,
-            predict_target_only = predict_target_only
+            patch_size = self.patch_size
         )
 
     def _draw_one_dataset(
         self, 
         dataset: TimeSeriesWindowedSingleDataset
     ):
-        if self.predict_target_only:
-            target_idx = (dataset.target_start_idx, dataset.target_end_idx)
-        else:
-            target_idx = None
 
         dataloader = DataLoader(
             dataset = dataset,
@@ -197,26 +198,24 @@ class MultipleModelPredictionResultPainter():
                 if i > self.batch_num:
                     break
 
-                group_ids, preds, _ = self.model_list[0].generate(batch, target_idx = target_idx)
+                preds, _ = self.model_list[0].generate(batch)
                 batch_inputs, batch_labels, batch_preds = self.model_list[0].prepare_items_for_plt(batch, preds)
 
                 batch_preds_list = [batch_preds]
 
                 for model_idx in range(1, len(self.model_list)):
-                    _, preds, _ = self.model_list[model_idx].generate(batch, target_idx = target_idx)
+                    preds, _ = self.model_list[model_idx].generate(batch)
                     _, _, batch_preds = self.model_list[model_idx].prepare_items_for_plt(batch, preds)
                     batch_preds_list.append(batch_preds)
 
                 self.painter.draw_batch_prediction_result_for_pred_list(
                     model_name_list = self.model_name_list,
                     color_name_list = self.color_name_list,
-                    dataset_name = dataset.dataset_name, 
-                    group_ids = group_ids, 
+                    dataset_name = dataset.dataset_name,
                     batch_inputs = batch_inputs, 
                     batch_labels = batch_labels, 
                     batch_preds_list = batch_preds_list, 
-                    batch_idx = i, 
-                    target_idx = target_idx
+                    batch_idx = i
                 )
 
 
