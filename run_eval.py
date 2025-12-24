@@ -9,6 +9,7 @@ from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEF
 
 def main(args):
     local_rank = int(os.getenv('LOCAL_RANK') or 0)
+    os.makedirs(args.output_path, exist_ok=True)
 
     input_length = args.input_length
     prediction_length = args.prediction_length
@@ -62,20 +63,25 @@ def main(args):
             prediction_length = prediction_length,
         )
 
-    eval_runner = EvaluationRunner(
-        model = model,
-        root_path = args.dataset_path,
-        output_path = args.output_path,
-        input_length = args.input_length,
-        predict_length = args.prediction_length,
-        batch_size = args.batch_size,
-        patch_size = model.patch_size,  # load patch_size from model wrapper since WaveletMoE migh have dynamic patch_size
-        use_per_sample_norm = args.use_per_sample_norm,
-        num_worker = args.num_worker,
-        draw_prediciton_result = args.draw_prediciton_result,
-    )
+    for dataset_path in args.dataset_paths:
+        print(f"\n[INFO] Evaluating benchmark: {dataset_path}")
 
-    eval_runner.evaluate()
+        eval_runner = EvaluationRunner(
+            model=model,
+            root_path= dataset_path,
+            output_path=args.output_path,
+            input_length=args.input_length,
+            predict_length=args.prediction_length,
+            batch_size=args.batch_size,
+            patch_size=model.patch_size,
+            # load patch_size from model wrapper since WaveletMoE migh have dynamic patch_size
+            use_per_sample_norm=args.use_per_sample_norm,
+            num_worker=args.num_worker,
+            draw_prediciton_result=args.draw_prediciton_result,
+        )
+
+        eval_runner.evaluate()
+
 
 
 if __name__ == '__main__':
@@ -87,10 +93,16 @@ if __name__ == '__main__':
         help='Model path'
     )
     parser.add_argument(
-        '--dataset_path', '-d',
+        '--dataset_paths', '-d',
         type=str,
-        default="/data/home/dataset/gifteval_benchmark_strictly_processed_copy",
-        help='Benchmark data path'
+        nargs='+',
+        default=[
+            "/data/home/dataset/gifteval_benchmark_strictly_processed_copy",
+            "/data/home/dataset/chronos_zero_shot_benchmark",
+            "/data/home/dataset/fev_benchmark_processed"
+        ],
+        # default=["/data/home/dataset/USTD_12G_zero_shot_processed"],
+        help='Benchmark data paths'
     )
     parser.add_argument(
         '--output_path', '-o',
