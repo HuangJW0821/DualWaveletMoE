@@ -30,7 +30,7 @@ class EvaluationRunner():
         normalization_method: str = 'zero',
         use_per_sample_norm: bool = False,
         num_worker: int = 16,
-        draw_prediciton_result: bool = True
+        draw_prediction_result: bool = True
     ):
         if not os.path.exists(root_path):
             raise ValueError(f"Path not exists: [{root_path}]!")
@@ -53,7 +53,7 @@ class EvaluationRunner():
         self.batch_size = batch_size
         self.patch_size = patch_size
         self.num_worker = num_worker
-        self.draw_prediciton_result = draw_prediciton_result
+        self.draw_prediction_result = draw_prediction_result
 
         self.data_collator = WaveletTimeSeriesDataCollator(
             batch_size = batch_size,
@@ -67,7 +67,7 @@ class EvaluationRunner():
 
         self.file_name = f"BENCHMARK[{self.benchmark_name}]_[{self.input_length} to {self.predict_length} tokens]"
 
-        if draw_prediciton_result:
+        if draw_prediction_result:
             self.painter = PredictionResultPainter(
                 output_path = self.output_path,
                 file_name = self.file_name,
@@ -86,7 +86,7 @@ class EvaluationRunner():
             num_workers = self.num_worker 
         )
 
-        if self.draw_prediciton_result:
+        if self.draw_prediction_result:
             draw_result_step = max(1, len(dataset) // (5 * self.batch_size))    # draw 5 batch for each dataset
 
         metric_list = [
@@ -107,7 +107,7 @@ class EvaluationRunner():
                 # if i==100:
                 #     break
                 
-                if self.draw_prediciton_result and i % draw_result_step == 0:
+                if self.draw_prediction_result and i % draw_result_step == 0:
                     batch_inputs, batch_labels, batch_preds = self.model.prepare_items_for_plt(batch, preds)
                     self.painter.draw_batch_prediction_result(dataset.dataset_name, batch_inputs, batch_labels, batch_preds, i)
         

@@ -72,7 +72,7 @@ def main(args):
         patch_size = model.patch_size,  # load patch_size from model wrapper since WaveletMoE migh have dynamic patch_size
         use_per_sample_norm = args.use_per_sample_norm,
         num_worker = args.num_worker,
-        draw_prediciton_result = args.draw_prediciton_result,
+        draw_prediction_result = args.draw_prediction_result,
     )
 
     eval_runner.evaluate()
@@ -134,7 +134,7 @@ if __name__ == '__main__':
     )
 
     parser.add_argument(
-        "--draw_prediciton_result", 
+        "--draw_prediction_result", 
         action="store_true",
         help="draw prediction result of first batch, save in args.output_path"
     )
