@@ -45,8 +45,8 @@ def main(args):
         # for moirai-moe, model_path = f"Salesforce/moirai-moe-1.0-R-{size}", choose size from ["small", "base"]
         # respectively correspond to activated param size [11M, 86M] ([117M, 935M] in total)
 
-        # for moirai-2, model_path = f"Salesforce/moirai-2.0-R-{size}", choose size from ["small", "base", "large"]
-        # respectively correspond to param size [11M, 87M, 305M]
+        # for moirai-2, model_path = f"Salesforce/moirai-2.0-R-{size}", choose size from ["small"]
+        # respectively correspond to param size [11M]
         model = MoiraiFamilyForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
@@ -89,7 +89,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--dataset_path', '-d',
         type=str,
-        default="/data/home/dataset/gifteval_benchmark_strictly_processed_copy",
+        default="/data/home/dataset/wavelet_moe_benchmark",
         help='Benchmark data path'
     )
     parser.add_argument(

@@ -86,6 +86,9 @@ class EvaluationRunner():
             num_workers = self.num_worker 
         )
 
+        if self.draw_prediciton_result:
+            draw_result_step = max(1, len(dataset) // (5 * self.batch_size))    # draw 5 batch for each dataset
+
         metric_list = [
             MSEMetric(name='mse', patch_size = self.patch_size),
             MAEMetric(name='mae', patch_size = self.patch_size),
@@ -101,10 +104,10 @@ class EvaluationRunner():
 
                 timestep_cnt += preds.numel()
 
-                if i==100:
-                    break
+                # if i==100:
+                #     break
                 
-                if self.draw_prediciton_result and i%25==0:
+                if self.draw_prediciton_result and i % draw_result_step == 0:
                     batch_inputs, batch_labels, batch_preds = self.model.prepare_items_for_plt(batch, preds)
                     self.painter.draw_batch_prediction_result(dataset.dataset_name, batch_inputs, batch_labels, batch_preds, i)
         
