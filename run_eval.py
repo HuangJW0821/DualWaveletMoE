@@ -4,13 +4,15 @@ import os
 import argparse
 
 from wavelet_moe.evaluation.eval_runner import EvaluationRunner
-from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation, SundialForEvaluation, TimerForEvaluation, TimesfmForEvaluation, Timesfm2_0ForEvaluation
+from wavelet_moe.evaluation.eval_models import WaveletMoEForEvaluation, TimeMoEForEvaluation, ChronosForEvaluation, SundialForEvaluation, TimerForEvaluation, TimesfmoldForEvaluation
 
 def main(args):
     local_rank = int(os.getenv('LOCAL_RANK') or 0)
 
     input_length = args.input_length
     prediction_length = args.prediction_length
+
+    model_name = os.path.basename(args.model)
 
     if "TimeMoE" in args.model:
         model = TimeMoEForEvaluation(
@@ -32,7 +34,7 @@ def main(args):
             device = f"cuda:{local_rank}",
             input_length = args.input_length,
             prediction_length = args.prediction_length,
-            num_samples=20
+            num_samples=1
         )
     elif "Timer" in args.model or "timer" in args.model:
         model = TimerForEvaluation(
@@ -41,19 +43,20 @@ def main(args):
             input_length = args.input_length,
             prediction_length = args.prediction_length
         )
-    elif "timesfm-2.5" in args.model:
-        model = TimesfmForEvaluation(
-            model_path = args.model,
-            device = f"cuda:{local_rank}",
-            input_length = args.input_length,
-            prediction_length = args.prediction_length
-        )
+    # elif "timesfm-2.5" in args.model:
+    #     model = TimesfmForEvaluation(
+    #         model_path = args.model,
+    #         device = f"cuda:{local_rank}",
+    #         input_length = args.input_length,
+    #         prediction_length = args.prediction_length
+    #     )
     elif "timesfm-2.0" in args.model:
-        model = Timesfm2_0ForEvaluation(
+        model = TimesfmoldForEvaluation(
             model_path = args.model,
             device = f"cuda:{local_rank}",
             input_length = args.input_length,
-            prediction_length = args.prediction_length
+            prediction_length = args.prediction_length,
+            batch_size = args.batch_size
         )
     else:
         model = WaveletMoEForEvaluation(

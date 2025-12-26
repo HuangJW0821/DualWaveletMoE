@@ -118,8 +118,9 @@ class EvaluationRunner():
                     # Count valid timesteps (all timesteps from valid samples)
                     timestep_cnt += valid_preds.numel()
 
-                if i==100:
-                    break
+                # 全量评测则注释
+                # if i==100:
+                #     break
                 
                 if self.draw_prediciton_result and i%25==0:
                     batch_inputs, batch_labels, batch_preds = self.model.prepare_items_for_plt(batch, preds)
@@ -166,6 +167,7 @@ class EvaluationRunner():
             )
 
             if len(dataset) < self.batch_size:
+                print(f"Skipping {dataset_name}: dataset length ({len(dataset)}) < batch_size ({self.batch_size})")
                 continue
 
             result = self._eval_one_dataset(dataset)
